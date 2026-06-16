@@ -1,4 +1,11 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    Boolean
+)
 
 from app.database.base import Base
 
@@ -21,3 +28,22 @@ class Article(Base):
     published_at = Column(DateTime, nullable=True)
 
     scraped_at = Column(DateTime, nullable=True)
+
+    # Pipeline Status Flags
+    is_processed = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    summary_generated = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    embedding_generated = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )

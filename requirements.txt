@@ -30,3 +30,11 @@ httpx
 sentence-transformers
 
 groq
+
+langgraph
+
+langchain
+
+langchain-core
+
+streamlit

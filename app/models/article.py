@@ -7,6 +7,8 @@ from sqlalchemy import (
     Boolean
 )
 
+from pgvector.sqlalchemy import Vector
+
 from app.database.base import Base
 
 
@@ -46,4 +48,15 @@ class Article(Base):
         Boolean,
         default=False,
         nullable=False
+    )
+    
+    processed_at = Column(
+        DateTime, 
+        nullable=True
+    )
+
+    # Vector Embedding
+    embedding = Column(
+        Vector(768),
+        nullable=True
     )

@@ -9,7 +9,8 @@ class Retriever:
     def search(
         self,
         query: str,
-        limit: int = 5
+        limit: int = 10,
+        threshold: float = 0.31
     ):
 
         db = SessionLocal()
@@ -46,20 +47,50 @@ class Retriever:
 
             results = []
 
+            query_lower = query.lower()
+            keywords = query_lower.split()
+
             for row in rows:
 
-                results.append(
-                    {
-                        "id": row.id,
-                        "title": row.title,
-                        "source": row.source,
-                        "url": row.url,
-                        "summary": row.summary,
-                        "distance": float(row.distance)
-                    }
-                )
+                item = {
+                    "id": row.id,
+                    "title": row.title,
+                    "source": row.source,
+                    "url": row.url,
+                    "summary": row.summary,
+                    "distance": float(row.distance)
+                }
 
-            return results
+                title_lower = item["title"].lower()
+
+                rank_score = item["distance"]
+
+                matches = 0
+
+                for keyword in keywords:
+
+                    if keyword in title_lower:
+                        matches += 1
+
+                # boost title relevance
+                rank_score -= matches * 0.03
+
+                item["rank_score"] = rank_score
+
+                results.append(item)
+
+            # sort by hybrid score
+            results.sort(
+                key=lambda x: x["rank_score"]
+            )
+
+            filtered_results = [
+                item
+                for item in results
+                if item["rank_score"] <= threshold
+            ]
+
+            return filtered_results[:3]
 
         finally:
             db.close()

@@ -1,30 +1,47 @@
 class ContextBuilder:
 
+    MAX_CONTEXT = 6000
+
     def build(self, articles):
 
-        if not articles:
+        filtered_articles = [
+            article
+            for article in articles
+            if article["distance"] < 0.35
+        ]
+
+        if not filtered_articles:
             return "No relevant articles found."
 
         sections = []
 
-        for index, article in enumerate(articles, start=1):
+        current_length = 0
+
+        for index, article in enumerate(
+            filtered_articles,
+            start=1
+        ):
+
+            summary = article["summary"] or ""
 
             section = f"""
 ARTICLE {index}
 
 TITLE:
-{article["title"]}
+{article['title']}
 
 SOURCE:
-{article["source"]}
+{article['source']}
 
 SUMMARY:
-{article["summary"]}
-
-URL:
-{article["url"]}
+{summary}
 """
 
+            if current_length + len(section) > self.MAX_CONTEXT:
+                break
+
             sections.append(section)
+
+            current_length += len(section)
 
         return "\n\n".join(sections)

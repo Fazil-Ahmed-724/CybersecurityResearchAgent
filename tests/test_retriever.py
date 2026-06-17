@@ -1,15 +1,23 @@
 from app.services.retriever import Retriever
 
-results = Retriever().search(
-    "North Korean hackers malware campaign"
+retriever = Retriever()
+
+results = retriever.search(
+    query="North Korean hackers malware campaign",
+    limit=10,
+    threshold=0.33
 )
 
-for row in results:
+for item in results:
 
     print("=" * 50)
 
-    print(row.title)
+    print(item["title"])
 
-    print(row.source)
+    print(
+        f"distance={item['distance']:.4f}"
+    )
 
-    print(row.distance)
+    print(
+        f"rank={item['rank_score']:.4f}"
+    )

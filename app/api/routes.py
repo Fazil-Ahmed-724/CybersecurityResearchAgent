@@ -2,7 +2,8 @@ from fastapi import APIRouter
 
 from app.schemas.chat import (
     ChatRequest,
-    ChatResponse
+    ChatResponse,
+    SourceItem
 )
 
 from app.graph.research_graph import (
@@ -16,9 +17,7 @@ router = APIRouter()
     "/chat",
     response_model=ChatResponse
 )
-def chat(
-    request: ChatRequest
-):
+def chat(request: ChatRequest):
 
     result = research_graph.invoke(
         {
@@ -26,6 +25,19 @@ def chat(
         }
     )
 
+    sources = []
+
+    for article in result["articles"]:
+
+        sources.append(
+            SourceItem(
+                title=article["title"],
+                url=article["url"],
+                source=article["source"]
+            )
+        )
+
     return ChatResponse(
-        answer=result["answer"]
+        answer=result["answer"],
+        sources=sources
     )

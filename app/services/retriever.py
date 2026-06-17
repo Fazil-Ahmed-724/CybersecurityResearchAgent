@@ -6,33 +6,60 @@ from app.services.embedding_service import EmbeddingService
 
 class Retriever:
 
-    def search(self, query: str):
+    def search(
+        self,
+        query: str,
+        limit: int = 5
+    ):
 
         db = SessionLocal()
 
-        embedder = EmbeddingService()
+        try:
 
-        query_embedding = embedder.generate_embedding(
-            query
-        )
+            embedder = EmbeddingService()
 
-        sql = text("""
-        SELECT
-            title,
-            source,
-            summary,
-            embedding <=> CAST(:embedding AS vector) AS distance
-        FROM articles
-        WHERE embedding IS NOT NULL
-        ORDER BY embedding <=> CAST(:embedding AS vector)
-        LIMIT 5
-        """)
+            query_embedding = embedder.generate_embedding(
+                query
+            )
 
-        results = db.execute(
-            sql,
-            {
-                "embedding": str(query_embedding)
-            }
-        )
+            sql = text("""
+            SELECT
+                id,
+                title,
+                source,
+                url,
+                summary,
+                embedding <=> CAST(:embedding AS vector) AS distance
+            FROM articles
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:embedding AS vector)
+            LIMIT :limit
+            """)
 
-        return results.fetchall()
+            rows = db.execute(
+                sql,
+                {
+                    "embedding": str(query_embedding),
+                    "limit": limit
+                }
+            )
+
+            results = []
+
+            for row in rows:
+
+                results.append(
+                    {
+                        "id": row.id,
+                        "title": row.title,
+                        "source": row.source,
+                        "url": row.url,
+                        "summary": row.summary,
+                        "distance": float(row.distance)
+                    }
+                )
+
+            return results
+
+        finally:
+            db.close()

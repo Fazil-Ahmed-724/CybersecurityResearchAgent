@@ -6,13 +6,22 @@ class ResearchAgent:
 
     def answer(self, question: str):
 
-        results = Retriever().search(
-            question
-        )
+        results = Retriever().search(question)
+
+        if not results:
+
+            return {
+                "answer": "No relevant articles found.",
+                "sources": []
+            }
 
         context = "\n\n".join(
             [
-                row.summary
+                f"""
+Title: {row['title']}
+Source: {row['source']}
+Summary: {row['summary']}
+                """
                 for row in results
             ]
         )
@@ -20,13 +29,20 @@ class ResearchAgent:
         prompt = f"""
 You are a cybersecurity analyst.
 
-Answer using only the provided context.
+Use ONLY the supplied context.
 
 Question:
 {question}
 
 Context:
 {context}
+
+Provide:
+
+1. Executive Summary
+2. Key Findings
+3. Impact
+4. Recommendations
 """
 
         groq = GroqService()
@@ -41,4 +57,18 @@ Context:
             ]
         )
 
-        return response.choices[0].message.content
+        answer = response.choices[0].message.content
+
+        sources = [
+            {
+                "title": row["title"],
+                "source": row["source"],
+                "url": row["url"]
+            }
+            for row in results
+        ]
+
+        return {
+            "answer": answer,
+            "sources": sources
+        }

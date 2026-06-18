@@ -4,13 +4,7 @@ class ContextBuilder:
 
     def build(self, articles):
 
-        filtered_articles = [
-            article
-            for article in articles
-            if article["distance"] < 0.35
-        ]
-
-        if not filtered_articles:
+        if not articles:
             return "No relevant articles found."
 
         sections = []
@@ -18,11 +12,11 @@ class ContextBuilder:
         current_length = 0
 
         for index, article in enumerate(
-            filtered_articles,
+            articles,
             start=1
         ):
 
-            summary = article["summary"] or ""
+            summary = article.get("summary", "") or ""
 
             section = f"""
 ARTICLE {index}
@@ -44,4 +38,11 @@ SUMMARY:
 
             current_length += len(section)
 
-        return "\n\n".join(sections)
+        context = "\n\n".join(sections)
+
+        print("\n" + "=" * 50)
+        print("CONTEXT BUILT")
+        print("=" * 50)
+        print(context[:1000])
+
+        return context

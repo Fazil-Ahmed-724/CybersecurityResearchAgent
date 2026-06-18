@@ -11,16 +11,19 @@ st.set_page_config(
 
 st.title("🛡️ Cybersecurity Research Agent")
 
-# --------------------------------------------------
+# ----------------------------------
 # Session State
-# --------------------------------------------------
+# ----------------------------------
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --------------------------------------------------
+if "chat_id" not in st.session_state:
+    st.session_state.chat_id = None
+
+# ----------------------------------
 # Sidebar
-# --------------------------------------------------
+# ----------------------------------
 
 with st.sidebar:
 
@@ -29,6 +32,8 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat"):
 
         st.session_state.messages = []
+        st.session_state.chat_id = None
+
         st.rerun()
 
     questions = [
@@ -43,9 +48,9 @@ with st.sidebar:
             "🧑 " + q[:60]
         )
 
-# --------------------------------------------------
-# Render Existing Messages
-# --------------------------------------------------
+# ----------------------------------
+# Existing Messages
+# ----------------------------------
 
 for msg in st.session_state.messages:
 
@@ -83,17 +88,17 @@ for msg in st.session_state.messages:
                         source["url"]
                     )
 
-# --------------------------------------------------
+# ----------------------------------
 # Chat Input
-# --------------------------------------------------
+# ----------------------------------
 
 question = st.chat_input(
     "Ask a cybersecurity question..."
 )
 
-# --------------------------------------------------
+# ----------------------------------
 # Ask Question
-# --------------------------------------------------
+# ----------------------------------
 
 if question:
 
@@ -113,7 +118,8 @@ if question:
             response = requests.post(
                 API_URL,
                 json={
-                    "question": question
+                    "question": question,
+                    "chat_id": st.session_state.chat_id
                 },
                 timeout=120
             )
@@ -121,6 +127,9 @@ if question:
         if response.status_code == 200:
 
             data = response.json()
+
+            # Save chat id
+            st.session_state.chat_id = data["chat_id"]
 
             st.session_state.messages.append(
                 {

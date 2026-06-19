@@ -15,12 +15,30 @@ from app.models.chat_summary import ChatSummary
 from app.models.article import Article
 from app.api.auth_routes import router as auth_router
 
+# Initialize scheduler
+from app.jobs.scheduler import scheduler
+from app.jobs.article_ingestion_job import run_ingestion
+
 app = FastAPI(
     title="Cybersecurity Research Agent"
 )
 
 # Create tables on startup
 Base.metadata.create_all(bind=engine)
+
+@app.on_event("startup")
+def startup():
+    
+    # Start scheduler if not already running
+    if not scheduler.running:
+        scheduler.start()
+        print("[FastAPI] Scheduler Started")
+    
+    # Run immediate ingestion on startup
+    try:
+        run_ingestion()
+    except Exception as e:
+        print(f"[FastAPI] Immediate ingestion failed: {e}")
 
 app.include_router(router)
 app.include_router(auth_router)

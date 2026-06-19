@@ -115,3 +115,36 @@ class ChatRepository:
             .order_by(Message.id.asc())
             .all()
         )
+
+    def get_recent_chat_messages(
+        self,
+        chat_id: int,
+        limit: int = 10
+    ):
+
+        messages = (
+            self.db.query(Message)
+            .filter(
+                Message.chat_id == chat_id
+            )
+            .order_by(Message.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+        return list(
+            reversed(messages)
+        )
+
+    def count_chat_messages(
+        self,
+        chat_id: int
+    ):
+
+        return (
+            self.db.query(Message)
+            .filter(
+                Message.chat_id == chat_id
+            )
+            .count()
+        )

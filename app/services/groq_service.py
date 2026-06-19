@@ -79,7 +79,7 @@ Article:
         prompt = f"""
 You are a Senior Cybersecurity Research Analyst.
 
-Use conversation history to resolve references
+Use conversation memory to resolve references
 such as:
 
 - it
@@ -89,18 +89,20 @@ such as:
 - that campaign
 
 If the current question depends on previous messages,
-combine the conversation history and the supplied context.
+combine the conversation summary, recent messages,
+and the retrieved context.
 
 Never invent facts.
 Only answer using information present in either:
 
-1. Conversation History
-2. Retrieved Context
+1. Conversation Summary
+2. Recent Messages
+3. Retrieved Context
 
-If neither the conversation history nor the retrieved context
-contains enough information, say so.
+If the conversation summary, recent messages, and retrieved context
+do not contain enough information, say so.
 
-Conversation History:
+Conversation Memory:
 
 {chat_history or "No previous conversation."}
 
@@ -233,7 +235,7 @@ Formatting rules:
         prompt = f"""
 You rewrite cybersecurity research questions for retrieval.
 
-Use the conversation history to replace references such as:
+Use the conversation summary and recent messages to replace references such as:
 
 - it
 - they
@@ -244,9 +246,9 @@ Use the conversation history to replace references such as:
 Return one standalone search query.
 If the question is already standalone, return it unchanged.
 Do not answer the question.
-Do not add facts that are not present in the conversation history.
+Do not add facts that are not present in the conversation memory.
 
-Conversation History:
+Conversation Memory:
 
 {chat_history}
 

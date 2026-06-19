@@ -22,8 +22,16 @@ from app.repositories.chat_repository import (
     ChatRepository
 )
 
+from app.repositories.chat_summary_repository import (
+    ChatSummaryRepository
+)
+
 from app.services.chat_service import (
     ChatService
+)
+
+from app.services.chat_summary_service import (
+    ChatSummaryService
 )
 
 from app.api.dependencies import (
@@ -52,6 +60,8 @@ def chat(
     try:
 
         repository = ChatRepository(db)
+
+        summary_repository = ChatSummaryRepository(db)
 
         chat_service = ChatService(
             repository
@@ -86,7 +96,8 @@ def chat(
             chat_id = chat.id
 
         memory_service = MemoryService(
-            repository
+            repository,
+            summary_repository
         )
 
         conversation_context = memory_service.get_chat_context(
@@ -121,6 +132,46 @@ def chat(
             chat_id=chat_id,
             content=result["answer"]
         )
+
+        total_messages = repository.count_chat_messages(
+            chat_id=chat_id
+        )
+
+        if total_messages % 10 == 0:
+
+            try:
+
+                previous_summary = summary_repository.get_summary(
+                    chat_id=chat_id
+                )
+
+                recent_messages = repository.get_recent_chat_messages(
+                    chat_id=chat_id,
+                    limit=10
+                )
+
+                summary_service = ChatSummaryService()
+
+                summary = summary_service.generate_summary(
+                    messages=recent_messages,
+                    existing_summary=(
+                        previous_summary.summary
+                        if previous_summary
+                        else ""
+                    )
+                )
+
+                summary_repository.update_summary(
+                    chat_id=chat_id,
+                    summary=summary
+                )
+
+            except Exception as error:
+
+                db.rollback()
+
+                print("\nChat summary update failed:")
+                print(error)
 
         # -----------------------------
         # Sources

@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from fastapi import (
+    APIRouter,
+    Depends
+)
 
 from app.schemas.chat import (
     ChatRequest,
@@ -10,7 +13,9 @@ from app.graph.research_graph import (
     research_graph
 )
 
-from app.database.db import SessionLocal
+from app.database.db import (
+    SessionLocal
+)
 
 from app.repositories.chat_repository import (
     ChatRepository
@@ -18,6 +23,10 @@ from app.repositories.chat_repository import (
 
 from app.services.chat_service import (
     ChatService
+)
+
+from app.api.dependencies import (
+    get_current_user_id
 )
 
 router = APIRouter()
@@ -28,7 +37,10 @@ router = APIRouter()
     response_model=ChatResponse
 )
 def chat(
-    request: ChatRequest
+    request: ChatRequest,
+    user_id: int = Depends(
+        get_current_user_id
+    )
 ):
 
     db = SessionLocal()
@@ -42,7 +54,7 @@ def chat(
         )
 
         # -----------------------------
-        # Create chat if needed
+        # Create Chat
         # -----------------------------
 
         if request.chat_id:
@@ -52,14 +64,14 @@ def chat(
         else:
 
             chat = chat_service.create_chat(
-                1,
-                request.question[:50]
+                user_id=user_id,
+                title=request.question[:50]
             )
 
             chat_id = chat.id
 
         # -----------------------------
-        # Save user message
+        # Save User Message
         # -----------------------------
 
         chat_service.save_user_message(
@@ -78,7 +90,7 @@ def chat(
         )
 
         # -----------------------------
-        # Save assistant answer
+        # Save Assistant Message
         # -----------------------------
 
         chat_service.save_assistant_message(

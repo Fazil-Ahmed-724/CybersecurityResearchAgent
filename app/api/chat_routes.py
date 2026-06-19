@@ -1,18 +1,15 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.database.db import SessionLocal
 
-from app.repositories.chat_repository import (
-    ChatRepository
-)
+from app.repositories.chat_repository import ChatRepository
+from app.services.chat_service import ChatService
 
-from app.services.chat_service import (
-    ChatService
-)
+from app.schemas.chat import CreateChatRequest
 
-from app.schemas.chat import (
-    CreateChatRequest
+from app.api.dependencies import (
+    get_current_user_id
 )
 
 router = APIRouter(
@@ -22,7 +19,6 @@ router = APIRouter(
 
 
 class MessageRequest(BaseModel):
-
     chat_id: int
     role: str
     content: str
@@ -34,7 +30,8 @@ class MessageRequest(BaseModel):
 
 @router.post("/")
 def create_chat(
-    request: CreateChatRequest
+    request: CreateChatRequest,
+    user_id: int = Depends(get_current_user_id)
 ):
 
     db = SessionLocal()
@@ -46,7 +43,7 @@ def create_chat(
         service = ChatService(repository)
 
         chat = service.create_chat(
-            user_id=request.user_id,
+            user_id=user_id,
             title=request.title
         )
 
@@ -57,17 +54,16 @@ def create_chat(
         }
 
     finally:
-
         db.close()
 
 
 # ----------------------------------
-# User Chats
+# My Chats
 # ----------------------------------
 
-@router.get("/user/{user_id}")
-def get_user_chats(
-    user_id: int
+@router.get("/my-chats")
+def get_my_chats(
+    user_id: int = Depends(get_current_user_id)
 ):
 
     db = SessionLocal()
@@ -78,20 +74,18 @@ def get_user_chats(
 
         service = ChatService(repository)
 
-        chats = service.get_user_chats(
-            user_id
-        )
+        chats = service.get_user_chats(user_id)
 
         return [
             {
                 "id": chat.id,
-                "title": chat.title
+                "title": chat.title,
+                "created_at": str(chat.created_at)
             }
             for chat in chats
         ]
 
     finally:
-
         db.close()
 
 
@@ -101,7 +95,8 @@ def get_user_chats(
 
 @router.post("/message")
 def save_message(
-    request: MessageRequest
+    request: MessageRequest,
+    user_id: int = Depends(get_current_user_id)
 ):
 
     db = SessionLocal()
@@ -109,6 +104,19 @@ def save_message(
     try:
 
         repository = ChatRepository(db)
+
+        service = ChatService(repository)
+
+        chats = service.get_user_chats(user_id)
+
+        chat_ids = [chat.id for chat in chats]
+
+        if request.chat_id not in chat_ids:
+
+            raise HTTPException(
+                status_code=403,
+                detail="You do not own this chat"
+            )
 
         message = repository.save_message(
             chat_id=request.chat_id,
@@ -123,7 +131,6 @@ def save_message(
         }
 
     finally:
-
         db.close()
 
 
@@ -133,7 +140,8 @@ def save_message(
 
 @router.get("/{chat_id}/messages")
 def get_chat_messages(
-    chat_id: int
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id)
 ):
 
     db = SessionLocal()
@@ -144,9 +152,18 @@ def get_chat_messages(
 
         service = ChatService(repository)
 
-        messages = service.get_chat_messages(
-            chat_id
-        )
+        chats = service.get_user_chats(user_id)
+
+        chat_ids = [chat.id for chat in chats]
+
+        if chat_id not in chat_ids:
+
+            raise HTTPException(
+                status_code=403,
+                detail="You do not own this chat"
+            )
+
+        messages = service.get_chat_messages(chat_id)
 
         return [
             {
@@ -157,5 +174,4 @@ def get_chat_messages(
         ]
 
     finally:
-
         db.close()

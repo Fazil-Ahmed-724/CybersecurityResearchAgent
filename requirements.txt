@@ -38,3 +38,7 @@ langchain
 langchain-core
 
 streamlit
+
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart

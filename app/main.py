@@ -12,6 +12,7 @@ from app.models.user import User
 from app.models.chat import Chat
 from app.models.message import Message
 from app.models.article import Article
+from app.api.auth_routes import router as auth_router
 
 app = FastAPI(
     title="Cybersecurity Research Agent"
@@ -21,7 +22,5 @@ app = FastAPI(
 Base.metadata.create_all(bind=engine)
 
 app.include_router(router)
-
-app.include_router(
-    chat_router
-)
+app.include_router(auth_router)
+app.include_router(chat_router)

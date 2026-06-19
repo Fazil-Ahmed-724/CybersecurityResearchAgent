@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy import text
 
 from app.database.db import SessionLocal
@@ -5,6 +7,141 @@ from app.services.embedding_service import EmbeddingService
 
 
 class Retriever:
+
+    STOPWORDS = {
+        "about",
+        "after",
+        "also",
+        "and",
+        "are",
+        "campaign",
+        "campaigns",
+        "country",
+        "create",
+        "created",
+        "creator",
+        "creators",
+        "did",
+        "does",
+        "explain",
+        "for",
+        "from",
+        "has",
+        "have",
+        "how",
+        "into",
+        "its",
+        "malware",
+        "the",
+        "this",
+        "that",
+        "they",
+        "target",
+        "targeted",
+        "targets",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with"
+    }
+
+    def _extract_keywords(
+        self,
+        query: str
+    ):
+
+        words = re.findall(
+            r"[a-zA-Z0-9][a-zA-Z0-9._-]*",
+            query.lower()
+        )
+
+        return [
+            word
+            for word in words
+            if len(word) > 2
+            and word not in self.STOPWORDS
+        ][:8]
+
+    def _build_lexical_query(
+        self,
+        keywords
+    ):
+
+        conditions = []
+        params = {}
+
+        for index, keyword in enumerate(keywords):
+
+            param_name = f"keyword_{index}"
+
+            params[param_name] = f"%{keyword}%"
+
+            conditions.append(
+                f"""
+                (
+                    title ILIKE :{param_name}
+                    OR summary ILIKE :{param_name}
+                    OR content ILIKE :{param_name}
+                )
+                """
+            )
+
+        if not conditions:
+            return None, {}
+
+        sql = text(f"""
+        SELECT
+            id,
+            title,
+            source,
+            url,
+            summary,
+            0.0 AS distance,
+            true AS lexical_match
+        FROM articles
+        WHERE {" OR ".join(conditions)}
+        ORDER BY id DESC
+        LIMIT :limit
+        """)
+
+        return sql, params
+
+    def _rank_item(
+        self,
+        item,
+        keywords
+    ):
+
+        title_lower = item["title"].lower()
+        summary_lower = (item.get("summary") or "").lower()
+
+        rank_score = item["distance"]
+
+        title_matches = 0
+        summary_matches = 0
+
+        for keyword in keywords:
+
+            if keyword in title_lower:
+                title_matches += 1
+
+            if keyword in summary_lower:
+                summary_matches += 1
+
+        rank_score -= title_matches * 0.12
+        rank_score -= summary_matches * 0.04
+
+        if item.get("lexical_match"):
+            rank_score -= 0.35
+
+        item["rank_score"] = rank_score
+
+        return item
 
     def search(
         self,
@@ -43,12 +180,28 @@ class Retriever:
                     "embedding": str(query_embedding),
                     "limit": limit
                 }
+            ).fetchall()
+
+            keywords = self._extract_keywords(
+                query
             )
 
-            results = []
+            lexical_sql, lexical_params = self._build_lexical_query(
+                keywords
+            )
 
-            query_lower = query.lower()
-            keywords = query_lower.split()
+            lexical_rows = []
+
+            if lexical_sql is not None:
+
+                lexical_params["limit"] = limit
+
+                lexical_rows = db.execute(
+                    lexical_sql,
+                    lexical_params
+                ).fetchall()
+
+            results_by_id = {}
 
             for row in rows:
 
@@ -58,26 +211,41 @@ class Retriever:
                     "source": row.source,
                     "url": row.url,
                     "summary": row.summary,
-                    "distance": float(row.distance)
+                    "distance": float(row.distance),
+                    "lexical_match": False
                 }
 
-                title_lower = item["title"].lower()
+                results_by_id[item["id"]] = item
 
-                rank_score = item["distance"]
+            for row in lexical_rows:
 
-                matches = 0
+                item = results_by_id.get(
+                    row.id
+                )
 
-                for keyword in keywords:
+                if item:
 
-                    if keyword in title_lower:
-                        matches += 1
+                    item["lexical_match"] = True
 
-                # Hybrid ranking boost
-                rank_score -= matches * 0.03
+                    continue
 
-                item["rank_score"] = rank_score
+                results_by_id[row.id] = {
+                    "id": row.id,
+                    "title": row.title,
+                    "source": row.source,
+                    "url": row.url,
+                    "summary": row.summary,
+                    "distance": float(row.distance),
+                    "lexical_match": True
+                }
 
-                results.append(item)
+            results = [
+                self._rank_item(
+                    item,
+                    keywords
+                )
+                for item in results_by_id.values()
+            ]
 
             # Sort by hybrid score
             results.sort(

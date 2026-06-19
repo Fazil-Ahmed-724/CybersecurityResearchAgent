@@ -3,6 +3,33 @@ import streamlit as st
 
 BASE_URL = "http://127.0.0.1:8000"
 
+
+def unique_sources(sources):
+
+    unique = []
+    seen = set()
+
+    for source in sources:
+
+        source_key = (
+            source.get("url")
+            or source.get("title")
+            or source.get("source")
+        )
+
+        if source_key in seen:
+            continue
+
+        seen.add(
+            source_key
+        )
+
+        unique.append(
+            source
+        )
+
+    return unique
+
 # ----------------------------------
 # Page Config
 # ----------------------------------
@@ -288,13 +315,20 @@ for msg in st.session_state.messages:
             and "sources" in msg
         ):
 
+            sources = unique_sources(
+                msg["sources"]
+            )
+
+            if not sources:
+                continue
+
             st.divider()
 
             st.subheader(
                 "Sources"
             )
 
-            for source in msg["sources"]:
+            for source in sources:
 
                 st.markdown(
                     f"### {source['source']}"

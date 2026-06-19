@@ -1,6 +1,7 @@
 from fastapi import (
     APIRouter,
-    Depends
+    Depends,
+    HTTPException
 )
 
 from app.schemas.chat import (
@@ -29,8 +30,11 @@ from app.api.dependencies import (
     get_current_user_id
 )
 
-router = APIRouter()
+from app.services.memory_service import (
+    MemoryService
+)
 
+router = APIRouter()
 
 @router.post(
     "/chat",
@@ -59,7 +63,18 @@ def chat(
 
         if request.chat_id:
 
-            chat_id = request.chat_id
+            chat = chat_service.get_chat(
+                request.chat_id
+            )
+
+            if not chat or chat.user_id != user_id:
+
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not own this chat"
+                )
+
+            chat_id = chat.id
 
         else:
 
@@ -69,6 +84,14 @@ def chat(
             )
 
             chat_id = chat.id
+
+        memory_service = MemoryService(
+            repository
+        )
+
+        conversation_context = memory_service.get_chat_context(
+            chat_id=chat_id
+        )
 
         # -----------------------------
         # Save User Message
@@ -85,7 +108,8 @@ def chat(
 
         result = research_graph.invoke(
             {
-                "question": request.question
+                "question": request.question,
+                "chat_history": conversation_context
             }
         )
 
@@ -103,8 +127,22 @@ def chat(
         # -----------------------------
 
         sources = []
+        seen_sources = set()
 
         for article in result["articles"]:
+
+            source_key = article.get(
+                "url"
+            ) or article.get(
+                "title"
+            )
+
+            if source_key in seen_sources:
+                continue
+
+            seen_sources.add(
+                source_key
+            )
 
             sources.append(
                 SourceItem(

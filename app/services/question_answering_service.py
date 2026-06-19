@@ -10,7 +10,8 @@ class QuestionAnsweringService:
     def answer_question(
         self,
         question: str,
-        context: str
+        context: str,
+        chat_history: str = ""
     ):
 
         print("=" * 50)
@@ -26,7 +27,19 @@ class QuestionAnsweringService:
 
         answer = self.groq.answer_question(
             question=question,
-            context=context
+            context=context,
+            chat_history=chat_history
         )
 
         return answer
+
+    def rewrite_query(
+        self,
+        question: str,
+        chat_history: str = ""
+    ):
+
+        return self.groq.rewrite_query(
+            question=question,
+            chat_history=chat_history
+        )

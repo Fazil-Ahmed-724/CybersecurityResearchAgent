@@ -15,8 +15,34 @@ def retrieve_articles(state):
 
     print("\n[Node] Retrieving Articles")
 
+    query = state["question"]
+
+    chat_history = state.get(
+        "chat_history",
+        ""
+    )
+
+    if chat_history.strip():
+
+        try:
+
+            query = qa_service.rewrite_query(
+                question=state["question"],
+                chat_history=chat_history
+            )
+
+        except Exception as error:
+
+            print("\nQuery rewrite failed:")
+            print(error)
+
+    state["rewritten_query"] = query
+
+    print("\nSearch Query:")
+    print(query)
+
     articles = retriever.search(
-        query=state["question"]
+        query=query
     )
 
     state["articles"] = articles
@@ -43,7 +69,11 @@ def generate_answer(state):
 
     answer = qa_service.answer_question(
         question=state["question"],
-        context=state["context"]
+        context=state["context"],
+        chat_history=state.get(
+            "chat_history",
+            ""
+        )
     )
 
     state["answer"] = answer

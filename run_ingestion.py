@@ -1,7 +1,5 @@
-from app.services.article_ingestion import (
-    ArticleIngestionService
-)
+from app.services.article_ingestion import ArticleIngestionService
 
-ArticleIngestionService().ingest_hackernews()
-
-print("Done")
+if __name__ == "__main__":
+    ArticleIngestionService().ingest()
+    print("Done")   

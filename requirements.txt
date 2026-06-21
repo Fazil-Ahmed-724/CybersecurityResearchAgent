@@ -1,22 +1,33 @@
 fastapi
+
 uvicorn[standard]
 
 langchain
+
 langgraph
+
 langchain-core
+
 langchain-community
+
 langchain-groq
 
 sqlalchemy
+
 psycopg2-binary
+
 pgvector
 
 feedparser
+
 beautifulsoup4
+
 requests
+
 lxml
 
 pydantic
+
 python-dotenv
 
 tiktoken
@@ -40,5 +51,11 @@ langchain-core
 streamlit
 
 passlib[bcrypt]
+
 python-jose[cryptography]
+
 python-multipart
+
+celery
+
+redis

@@ -1,0 +1,79 @@
+ .\venv\Scripts\Activate.ps1
+
+docker start cyber-redis
+
+docker ps
+
+docker start cyber-db
+
+docker ps
+
+ollama serve
+
+ollama list
+
+celery -A celery_app.celery_app worker --loglevel=info --pool=solo
+
+
+celery -A celery_app.celery_app worker --loglevel=debug --pool=solo
+
+CybersecurityResearchAgent — Final Command Cheat Sheet
+
+.\venv\Scripts\Activate.ps1
+
+docker start cyber-redis
+
+docker ps
+
+docker start cyber-db
+
+docker ps
+
+ollama serve
+
+ollama list
+
+
+celery -A celery_app.celery_app worker --loglevel=info --pool=solo
+
+celery -A celery_app.celery_app worker --loglevel=debug --pool=solo
+
+python run_ingestion.py
+
+
+uvicorn app.main:app --reload
+
+streamlit run ui/streamlit_app.py
+
+7) Backfill scripts
+A) Backfill missing article content
+python -m scripts.backfill_article_content
+
+B) Backfill missing embeddings
+python -m scripts.backfill_missing_embeddings
+
+C) Backfill missing summaries
+python -m scripts.backfill_missing_summaries
+
+8) Requeue scripts
+A) Requeue all incomplete/unprocessed articles
+python -m scripts.requeue_unprocessed_articles
+
+B) Requeue only missing summaries
+python -m scripts.requeue_missing_summaries
+
+C) Requeue only missing embeddings
+python -m scripts.requeue_missing_embeddings
+
+D) Requeue failed/incomplete articles
+python -m scripts.requeue_failed_articles
+
+9) Useful debug versions with limit
+Requeue only 1 article
+python -m scripts.requeue_unprocessed_articles --limit 1
+
+Requeue 5 missing summaries
+python -m scripts.requeue_missing_summaries --limit 5
+
+Requeue 5 missing embeddings
+python -m scripts.requeue_missing_embeddings --limit 5

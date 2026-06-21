@@ -5,6 +5,17 @@ from app.services.groq_service import GroqService
 
 class SummaryService:
 
+    def generate_summary(self, content: str):
+        return self._generate_summary(
+            content,
+            GroqService()
+        )
+
+    def _generate_summary(self, content: str, groq: GroqService):
+        return groq.summarize_article(
+            content
+        )
+
     def generate_summaries(self):
 
         db = SessionLocal()
@@ -26,8 +37,9 @@ class SummaryService:
 
             try:
 
-                summary = groq.summarize_article(
-                    article.content
+                summary = self._generate_summary(
+                    article.content,
+                    groq
                 )
 
                 article.summary = summary

@@ -13,10 +13,11 @@ from app.models.chat import Chat
 from app.models.message import Message
 from app.models.chat_summary import ChatSummary
 from app.models.article import Article
+from app.models.failed_task import FailedTask
 from app.api.auth_routes import router as auth_router
 
 # Initialize scheduler
-from app.jobs.scheduler import scheduler
+from app.jobs.scheduler import start_scheduler
 from app.jobs.article_ingestion_job import run_ingestion
 
 app = FastAPI(
@@ -29,10 +30,9 @@ Base.metadata.create_all(bind=engine)
 @app.on_event("startup")
 def startup():
     
-    # Start scheduler if not already running
-    if not scheduler.running:
-        scheduler.start()
-        print("[FastAPI] Scheduler Started")
+    # Start scheduled article ingestion
+    start_scheduler()
+    print("[FastAPI] Scheduler Started")
     
     # Run immediate ingestion on startup
     try:

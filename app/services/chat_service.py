@@ -1,6 +1,4 @@
-from app.repositories.chat_repository import (
-    ChatRepository
-)
+from app.repositories.chat_repository import ChatRepository
 
 
 class ChatService:
@@ -20,7 +18,6 @@ class ChatService:
         user_id: int,
         title: str
     ):
-
         return self.repository.create_chat(
             user_id=user_id,
             title=title
@@ -30,7 +27,6 @@ class ChatService:
         self,
         user_id: int
     ):
-
         return self.repository.get_user_chats(
             user_id
         )
@@ -39,7 +35,6 @@ class ChatService:
         self,
         chat_id: int
     ):
-
         return self.repository.get_chat(
             chat_id
         )
@@ -48,7 +43,6 @@ class ChatService:
         self,
         chat_id: int
     ):
-
         self.repository.delete_chat(
             chat_id
         )
@@ -62,7 +56,6 @@ class ChatService:
         chat_id: int,
         content: str
     ):
-
         return self.repository.save_message(
             chat_id=chat_id,
             role="user",
@@ -74,7 +67,6 @@ class ChatService:
         chat_id: int,
         content: str
     ):
-
         return self.repository.save_message(
             chat_id=chat_id,
             role="assistant",
@@ -85,7 +77,6 @@ class ChatService:
         self,
         chat_id: int
     ):
-
         return self.repository.get_chat_messages(
             chat_id
         )

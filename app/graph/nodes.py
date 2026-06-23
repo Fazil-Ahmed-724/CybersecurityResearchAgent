@@ -5,14 +5,11 @@ from app.services.question_answering_service import (
 )
 
 retriever = Retriever()
-
 context_builder = ContextBuilder()
-
 qa_service = QuestionAnsweringService()
 
 
 def retrieve_articles(state):
-
     print("\n[Node] Retrieving Articles")
 
     query = state["question"]
@@ -23,16 +20,12 @@ def retrieve_articles(state):
     )
 
     if chat_history.strip():
-
         try:
-
             query = qa_service.rewrite_query(
                 question=state["question"],
                 chat_history=chat_history
             )
-
         except Exception as error:
-
             print("\nQuery rewrite failed:")
             print(error)
 
@@ -46,12 +39,10 @@ def retrieve_articles(state):
     )
 
     state["articles"] = articles
-
     return state
 
 
 def build_context(state):
-
     print("\n[Node] Building Context")
 
     context = context_builder.build(
@@ -59,12 +50,10 @@ def build_context(state):
     )
 
     state["context"] = context
-
     return state
 
 
 def generate_answer(state):
-
     print("\n[Node] Generating Answer")
 
     answer = qa_service.answer_question(
@@ -77,5 +66,4 @@ def generate_answer(state):
     )
 
     state["answer"] = answer
-
     return state

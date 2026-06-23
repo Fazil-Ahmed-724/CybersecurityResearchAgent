@@ -1,16 +1,10 @@
-from typing import TypedDict
+from typing import TypedDict, List, Dict
 
 
 class ResearchState(TypedDict, total=False):
-
     question: str
-
     chat_history: str
-
     rewritten_query: str
-
-    articles: list
-
+    articles: List[Dict]
     context: str
-
     answer: str

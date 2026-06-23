@@ -1,5 +1,7 @@
-from pydantic import BaseModel
+from datetime import datetime
 from typing import Optional
+
+from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
@@ -23,9 +25,11 @@ class MessageResponse(BaseModel):
 
 
 class SourceItem(BaseModel):
+    id: int
     title: str
     url: str
     source: str
+    published_at: Optional[datetime] = None
 
 
 class ChatResponse(BaseModel):

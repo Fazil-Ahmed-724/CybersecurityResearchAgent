@@ -44,6 +44,7 @@ from app.services.memory_service import (
 
 router = APIRouter()
 
+
 @router.post(
     "/chat",
     response_model=ChatResponse
@@ -54,13 +55,10 @@ def chat(
         get_current_user_id
     )
 ):
-
     db = SessionLocal()
 
     try:
-
         repository = ChatRepository(db)
-
         summary_repository = ChatSummaryRepository(db)
 
         chat_service = ChatService(
@@ -68,17 +66,14 @@ def chat(
         )
 
         # -----------------------------
-        # Create Chat
+        # Create / Load Chat
         # -----------------------------
-
         if request.chat_id:
-
             chat = chat_service.get_chat(
                 request.chat_id
             )
 
             if not chat or chat.user_id != user_id:
-
                 raise HTTPException(
                     status_code=403,
                     detail="You do not own this chat"
@@ -87,12 +82,10 @@ def chat(
             chat_id = chat.id
 
         else:
-
             chat = chat_service.create_chat(
                 user_id=user_id,
-                title=request.question[:50]
+                title=request.question[:80]
             )
-
             chat_id = chat.id
 
         memory_service = MemoryService(
@@ -107,7 +100,6 @@ def chat(
         # -----------------------------
         # Save User Message
         # -----------------------------
-
         chat_service.save_user_message(
             chat_id=chat_id,
             content=request.question
@@ -116,7 +108,6 @@ def chat(
         # -----------------------------
         # LangGraph
         # -----------------------------
-
         result = research_graph.invoke(
             {
                 "question": request.question,
@@ -124,23 +115,33 @@ def chat(
             }
         )
 
+        answer = result.get(
+            "answer",
+            "No answer generated."
+        )
+
+        articles = result.get(
+            "articles",
+            []
+        )
+
         # -----------------------------
         # Save Assistant Message
         # -----------------------------
-
         chat_service.save_assistant_message(
             chat_id=chat_id,
-            content=result["answer"]
+            content=answer
         )
 
+        # -----------------------------
+        # Chat Summary refresh after every 10 messages
+        # -----------------------------
         total_messages = repository.count_chat_messages(
             chat_id=chat_id
         )
 
         if total_messages % 10 == 0:
-
             try:
-
                 previous_summary = summary_repository.get_summary(
                     chat_id=chat_id
                 )
@@ -167,48 +168,39 @@ def chat(
                 )
 
             except Exception as error:
-
                 db.rollback()
-
                 print("\nChat summary update failed:")
                 print(error)
 
         # -----------------------------
         # Sources
         # -----------------------------
-
         sources = []
         seen_sources = set()
 
-        for article in result["articles"]:
-
-            source_key = article.get(
-                "url"
-            ) or article.get(
-                "title"
-            )
+        for article in articles:
+            source_key = article.get("url") or article.get("title")
 
             if source_key in seen_sources:
                 continue
 
-            seen_sources.add(
-                source_key
-            )
+            seen_sources.add(source_key)
 
             sources.append(
                 SourceItem(
+                    id=article["id"],
                     title=article["title"],
                     url=article["url"],
-                    source=article["source"]
+                    source=article["source"],
+                    published_at=article.get("published_at")
                 )
             )
 
         return ChatResponse(
-            answer=result["answer"],
+            answer=answer,
             chat_id=chat_id,
             sources=sources
         )
 
     finally:
-
         db.close()

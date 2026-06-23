@@ -54,7 +54,6 @@ class Retriever:
         self,
         query: str
     ):
-
         words = re.findall(
             r"[a-zA-Z0-9][a-zA-Z0-9._-]*",
             query.lower()
@@ -71,14 +70,11 @@ class Retriever:
         self,
         keywords
     ):
-
         conditions = []
         params = {}
 
         for index, keyword in enumerate(keywords):
-
             param_name = f"keyword_{index}"
-
             params[param_name] = f"%{keyword}%"
 
             conditions.append(
@@ -100,7 +96,9 @@ class Retriever:
             title,
             source,
             url,
+            content,
             summary,
+            published_at,
             0.0 AS distance,
             true AS lexical_match
         FROM articles
@@ -116,31 +114,34 @@ class Retriever:
         item,
         keywords
     ):
-
-        title_lower = item["title"].lower()
+        title_lower = (item.get("title") or "").lower()
         summary_lower = (item.get("summary") or "").lower()
+        content_lower = (item.get("content") or "").lower()
 
         rank_score = item["distance"]
 
         title_matches = 0
         summary_matches = 0
+        content_matches = 0
 
         for keyword in keywords:
-
             if keyword in title_lower:
                 title_matches += 1
 
             if keyword in summary_lower:
                 summary_matches += 1
 
+            if keyword in content_lower:
+                content_matches += 1
+
         rank_score -= title_matches * 0.12
         rank_score -= summary_matches * 0.04
+        rank_score -= content_matches * 0.02
 
         if item.get("lexical_match"):
             rank_score -= 0.35
 
         item["rank_score"] = rank_score
-
         return item
 
     def search(
@@ -149,11 +150,9 @@ class Retriever:
         limit: int = 10,
         threshold: float = 0.70
     ):
-
         db = SessionLocal()
 
         try:
-
             embedder = EmbeddingService()
 
             query_embedding = embedder.generate_embedding(
@@ -166,7 +165,9 @@ class Retriever:
                 title,
                 source,
                 url,
+                content,
                 summary,
+                published_at,
                 embedding <=> CAST(:embedding AS vector) AS distance
             FROM articles
             WHERE embedding IS NOT NULL
@@ -193,7 +194,6 @@ class Retriever:
             lexical_rows = []
 
             if lexical_sql is not None:
-
                 lexical_params["limit"] = limit
 
                 lexical_rows = db.execute(
@@ -204,29 +204,24 @@ class Retriever:
             results_by_id = {}
 
             for row in rows:
-
                 item = {
                     "id": row.id,
                     "title": row.title,
                     "source": row.source,
                     "url": row.url,
+                    "content": row.content,
                     "summary": row.summary,
+                    "published_at": row.published_at,
                     "distance": float(row.distance),
                     "lexical_match": False
                 }
-
                 results_by_id[item["id"]] = item
 
             for row in lexical_rows:
-
-                item = results_by_id.get(
-                    row.id
-                )
+                item = results_by_id.get(row.id)
 
                 if item:
-
                     item["lexical_match"] = True
-
                     continue
 
                 results_by_id[row.id] = {
@@ -234,38 +229,29 @@ class Retriever:
                     "title": row.title,
                     "source": row.source,
                     "url": row.url,
+                    "content": row.content,
                     "summary": row.summary,
+                    "published_at": row.published_at,
                     "distance": float(row.distance),
                     "lexical_match": True
                 }
 
             results = [
-                self._rank_item(
-                    item,
-                    keywords
-                )
+                self._rank_item(item, keywords)
                 for item in results_by_id.values()
             ]
 
-            # Sort by hybrid score
             results.sort(
                 key=lambda x: x["rank_score"]
             )
 
-            print("\n" + "=" * 50)
+            print("\n" + "=" * 60)
             print("RETRIEVER RESULTS")
-            print("=" * 50)
+            print("=" * 60)
 
             for item in results[:5]:
                 print(
                     f"{item['rank_score']:.3f} | "
-                    f"{item['title']}"
-                )
-
-            print("\nFiltered results (threshold <= {})".format(threshold))
-            for item in results[:10]:
-                print(
-                    f"{item['distance']:.3f} | "
                     f"{item['title']}"
                 )
 
@@ -276,19 +262,14 @@ class Retriever:
             ]
 
             if filtered_results:
-
                 print(
-                    f"\nReturning {len(filtered_results[:3])} "
-                    f"filtered results"
+                    f"\nReturning {len(filtered_results[:3])} filtered results"
                 )
-
                 return filtered_results[:3]
 
             print(
-                "\nNo results passed threshold. "
-                "Returning top 3 closest matches."
+                "\nNo results passed threshold. Returning top 3 closest matches."
             )
-
             return results[:3]
 
         finally:

@@ -1,48 +1,35 @@
 class ContextBuilder:
 
-    MAX_CONTEXT = 6000
-
-    def build(self, articles):
+    def build(
+        self,
+        articles: list[dict]
+    ) -> str:
 
         if not articles:
             return "No relevant articles found."
 
-        sections = []
+        blocks = []
 
-        current_length = 0
-
-        for index, article in enumerate(
-            articles,
-            start=1
-        ):
-
+        for index, article in enumerate(articles, start=1):
+            title = article.get("title", "")
+            source = article.get("source", "")
+            url = article.get("url", "")
             summary = article.get("summary", "") or ""
+            content = article.get("content", "") or ""
 
-            section = f"""
-ARTICLE {index}
+            block = f"""
+Article {index}
+Title: {title}
+Source: {source}
+URL: {url}
 
-TITLE:
-{article['title']}
-
-SOURCE:
-{article['source']}
-
-SUMMARY:
+Summary:
 {summary}
-"""
 
-            if current_length + len(section) > self.MAX_CONTEXT:
-                break
+Content:
+{content}
+""".strip()
 
-            sections.append(section)
+            blocks.append(block)
 
-            current_length += len(section)
-
-        context = "\n\n".join(sections)
-
-        print("\n" + "=" * 50)
-        print("CONTEXT BUILT")
-        print("=" * 50)
-        print(context[:1000])
-
-        return context
+        return "\n\n" + ("\n\n" + ("-" * 80) + "\n\n").join(blocks)

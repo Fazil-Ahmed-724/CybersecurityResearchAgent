@@ -1,6 +1,17 @@
-from app.models.user import User
-from app.models.chat import Chat
-from app.models.message import Message
-from app.models.chat_summary import ChatSummary
-from app.models.article import Article
-from app.models.failed_task import FailedTask
+from .article import Article
+from .chat import Chat
+from .message import Message
+from .user import User
+from .chat_summary import ChatSummary
+from .failed_task import FailedTask
+from .ingestion_run import IngestionRun
+
+__all__ = [
+    "Article",
+    "Chat",
+    "Message",
+    "User",
+    "ChatSummary",
+    "FailedTask",
+    "IngestionRun",
+]

@@ -1,61 +1,36 @@
 fastapi
-
 uvicorn[standard]
 
 langchain
-
 langgraph
-
 langchain-core
-
 langchain-community
-
 langchain-groq
 
 sqlalchemy
-
 psycopg2-binary
-
 pgvector
 
 feedparser
-
 beautifulsoup4
-
 requests
-
 lxml
 
 pydantic
-
 python-dotenv
-
 tiktoken
-
 alembic
-
 apscheduler
-
 httpx
-
 sentence-transformers
-
 groq
-
-langgraph
-
-langchain
-
-langchain-core
-
 streamlit
 
 passlib[bcrypt]
+bcrypt==4.0.1
 
 python-jose[cryptography]
-
 python-multipart
 
 celery
-
 redis

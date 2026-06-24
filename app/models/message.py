@@ -4,6 +4,7 @@ from sqlalchemy import String
 from sqlalchemy import Text
 from sqlalchemy import ForeignKey
 from sqlalchemy import DateTime
+from sqlalchemy import JSON
 from sqlalchemy.sql import func
 
 from app.database.base import Base
@@ -32,6 +33,12 @@ class Message(Base):
     content = Column(
         Text,
         nullable=False
+    )
+
+    # NEW: store metadata for assistant responses / future follow-up retrieval
+    metadata_json = Column(
+        JSON,
+        nullable=True
     )
 
     created_at = Column(

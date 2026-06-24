@@ -9,6 +9,7 @@ class EmbeddingService:
         self.max_content_chars = 4000
         self.max_summary_chars = 1500
         self.max_title_chars = 500
+        self.max_query_chars = 1000
 
     def build_embedding_text(
         self,
@@ -17,9 +18,8 @@ class EmbeddingService:
         content: str = ""
     ) -> str:
         """
-        Build a safe embedding text that stays within model context limits.
+        Build article text for embedding.
         """
-
         title = (title or "").strip()[:self.max_title_chars]
         summary = (summary or "").strip()[:self.max_summary_chars]
         content = (content or "").strip()[:self.max_content_chars]
@@ -29,6 +29,13 @@ class EmbeddingService:
             f"Summary:\n{summary}\n\n"
             f"Content:\n{content}"
         )
+
+    def build_query_text(self, query: str) -> str:
+        """
+        Build search query text for embedding.
+        """
+        query = (query or "").strip()[:self.max_query_chars]
+        return f"Query: {query}"
 
     def generate_embedding(self, text: str):
         response = ollama.embed(
@@ -48,4 +55,12 @@ class EmbeddingService:
             summary=summary,
             content=content
         )
+        return self.generate_embedding(text)
+
+    def embed_query(self, query: str):
+        """
+        Generate embedding for user search query.
+        Retriever isi method ko call karta hai.
+        """
+        text = self.build_query_text(query)
         return self.generate_embedding(text)

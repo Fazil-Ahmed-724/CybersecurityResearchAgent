@@ -1,69 +1,217 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from app.graph.state import GraphState
 from app.services.retriever import Retriever
-from app.services.context_builder import ContextBuilder
-from app.services.question_answering_service import (
-    QuestionAnsweringService
-)
-
-retriever = Retriever()
-context_builder = ContextBuilder()
-qa_service = QuestionAnsweringService()
+from app.services.llm_service import LLMService
 
 
-def retrieve_articles(state):
+MAX_SUMMARY_CHARS = 1200
+MAX_CONTENT_CHARS = 2500
+MAX_TOTAL_CONTEXT_CHARS = 7000
+
+
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _clip_text(value: str, limit: int) -> str:
+    value = (value or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "..."
+
+
+def _normalize_article(article: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": article.get("id"),
+        "title": article.get("title") or "Untitled",
+        "source": article.get("source") or "Unknown",
+        "url": article.get("url") or "",
+        "published_at": article.get("published_at"),
+        "summary": article.get("summary") or "",
+        "content": article.get("content") or "",
+    }
+
+
+def retrieve_articles_node(state: GraphState) -> GraphState:
     print("\n[Node] Retrieving Articles")
 
-    query = state["question"]
+    original_question = _safe_str(state.get("question"))
+    resolved_question = _safe_str(state.get("resolved_question")) or original_question
+    chat_history = _safe_str(state.get("chat_history"))
 
-    chat_history = state.get(
-        "chat_history",
-        ""
+    print("\n[Node] Original Question:")
+    print(original_question)
+
+    print("\n[Node] Resolved Question:")
+    print(resolved_question)
+
+    retriever = Retriever()
+
+    retrieval_result = retriever.search(
+        query=resolved_question,
+        chat_history=chat_history,
+        original_question=original_question,
+        resolved_question=resolved_question,
     )
 
-    if chat_history.strip():
-        try:
-            query = qa_service.rewrite_query(
-                question=state["question"],
-                chat_history=chat_history
-            )
-        except Exception as error:
-            print("\nQuery rewrite failed:")
-            print(error)
+    rewritten_query = retrieval_result.get("rewritten_query") or resolved_question
+    topic_context = retrieval_result.get("topic_context") or {}
+    articles = retrieval_result.get("results") or []
 
-    state["rewritten_query"] = query
+    normalized_articles = [_normalize_article(article) for article in articles]
 
-    print("\nSearch Query:")
-    print(query)
+    print("\n[Node] Search Query:")
+    print(rewritten_query)
 
-    articles = retriever.search(
-        query=query
-    )
+    print("\n[Node] Topic Context:")
+    print(topic_context)
 
-    state["articles"] = articles
-    return state
+    print("\n[Node] Final Sources:")
+    for idx, item in enumerate(normalized_articles, start=1):
+        print(f"{idx}. {item.get('source')} | {item.get('title')}")
+
+    return {
+        **state,
+        "rewritten_query": rewritten_query,
+        "topic_context": topic_context,
+        "retrieved_articles": normalized_articles,
+    }
 
 
-def build_context(state):
+def build_context_node(state: GraphState) -> GraphState:
     print("\n[Node] Building Context")
 
-    context = context_builder.build(
-        state["articles"]
-    )
+    articles = state.get("retrieved_articles", []) or []
 
-    state["context"] = context
-    return state
+    if not articles:
+        return {
+            **state,
+            "context": "",
+            "sources": [],
+        }
+
+    context_blocks: List[str] = []
+    total_chars = 0
+
+    for idx, article in enumerate(articles, start=1):
+        title = article.get("title", "")
+        source = article.get("source", "")
+        published_at = article.get("published_at")
+        summary = _clip_text(article.get("summary", ""), MAX_SUMMARY_CHARS)
+        content = _clip_text(article.get("content", ""), MAX_CONTENT_CHARS)
+
+        published_str = ""
+        if published_at:
+            try:
+                published_str = str(published_at)
+            except Exception:
+                published_str = ""
+
+        block_parts = [
+            f"[Article {idx}]",
+            f"Title: {title}",
+            f"Source: {source}",
+        ]
+
+        if published_str:
+            block_parts.append(f"Published At: {published_str}")
+
+        if summary:
+            block_parts.append(f"Summary: {summary}")
+
+        if content:
+            block_parts.append(f"Content: {content}")
+
+        block = "\n".join(block_parts)
+
+        if total_chars + len(block) > MAX_TOTAL_CONTEXT_CHARS:
+            remaining = MAX_TOTAL_CONTEXT_CHARS - total_chars
+            if remaining > 300:
+                context_blocks.append(block[:remaining].rstrip() + "...")
+            break
+
+        context_blocks.append(block)
+        total_chars += len(block)
+
+    context = "\n\n" + ("\n\n" + ("-" * 80) + "\n\n").join(context_blocks)
+
+    print(f"[Node] Context size (chars): {len(context)}")
+
+    sources = [
+        {
+            "id": article.get("id"),
+            "title": article.get("title"),
+            "source": article.get("source"),
+            "url": article.get("url"),
+            "published_at": article.get("published_at"),
+        }
+        for article in articles
+    ]
+
+    return {
+        **state,
+        "context": context,
+        "sources": sources,
+    }
 
 
-def generate_answer(state):
+def generate_answer_node(state: GraphState) -> GraphState:
     print("\n[Node] Generating Answer")
 
-    answer = qa_service.answer_question(
-        question=state["question"],
-        context=state["context"],
-        chat_history=state.get(
-            "chat_history",
-            ""
-        )
-    )
+    question = _safe_str(state.get("question"))
+    resolved_question = _safe_str(state.get("resolved_question")) or question
+    context = _safe_str(state.get("context"))
+    sources = state.get("sources", []) or []
 
-    state["answer"] = answer
-    return state
+    llm = LLMService()
+
+    if not context:
+        fallback = (
+            "I could not find enough relevant cybersecurity context to answer this question."
+        )
+        return {
+            **state,
+            "answer": fallback,
+            "sources": sources,
+        }
+
+    prompt = f"""
+You are a cybersecurity research assistant.
+
+Answer the user's question using ONLY the provided context.
+If the question is a follow-up, use the resolved question as the primary meaning.
+Do not invent facts not present in the context.
+If multiple sources mention affected organizations, merge them carefully.
+If the context is partial, say so clearly.
+
+User Question:
+{question}
+
+Resolved Question:
+{resolved_question}
+
+Context:
+{context}
+
+Return a clear structured answer with:
+1. Executive Summary
+2. Key Findings
+3. Impact
+4. Recommendations
+""".strip()
+
+    answer = llm.generate(prompt)
+
+    if not answer:
+        answer = "I could not generate an answer for this question."
+
+    return {
+        **state,
+        "answer": answer,
+        "sources": sources,
+    }

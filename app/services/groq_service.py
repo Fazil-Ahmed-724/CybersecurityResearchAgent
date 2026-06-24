@@ -1,11 +1,12 @@
 import re
 
 from groq import Groq
+from groq import APIStatusError
+
 from app.config.settings import settings
 
 
 class GroqService:
-
     SECTION_ORDER = {
         "executive summary": 1,
         "key findings": 2,
@@ -25,30 +26,70 @@ class GroqService:
         re.IGNORECASE
     )
 
+    MAX_HISTORY_CHARS = 2500
+    MAX_CONTEXT_CHARS = 12000
+    MAX_PROMPT_CHARS = 17000
+
     def __init__(self):
         self.client = Groq(
             api_key=settings.GROQ_API_KEY
         )
 
+    # ------------------------------------------------------------------
+    # Generic helpers
+    # ------------------------------------------------------------------
+
+    def _truncate_text(self, value: str, max_chars: int) -> str:
+        value = (value or "").strip()
+        if len(value) <= max_chars:
+            return value
+        return value[:max_chars].rstrip() + "..."
+
+    def _fit_prompt_budget(self, prompt: str, max_chars: int | None = None) -> str:
+        max_chars = max_chars or self.MAX_PROMPT_CHARS
+        prompt = (prompt or "").strip()
+
+        if len(prompt) <= max_chars:
+            return prompt
+
+        return prompt[:max_chars].rstrip() + "\n\n[Prompt truncated due to size]"
+
+    # ------------------------------------------------------------------
+    # LLM call
+    # ------------------------------------------------------------------
+
     def generate(self, prompt: str):
+        prompt = self._fit_prompt_budget(prompt)
 
-        response = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.2
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.2
+            )
+            return response.choices[0].message.content
 
-        return response.choices[0].message.content
+        except APIStatusError as exc:
+            # Groq 413 / rate limit / prompt too large fallback
+            error_text = str(exc).lower()
+            if "413" in error_text or "request too large" in error_text or "requested" in error_text:
+                raise ValueError("GROQ_PROMPT_TOO_LARGE") from exc
+            raise
+
+    # ------------------------------------------------------------------
+    # Summarization
+    # ------------------------------------------------------------------
 
     def summarize_article(
         self,
         content: str
     ):
+        content = self._truncate_text(content, 12000)
 
         prompt = f"""
 You are a cybersecurity analyst.
@@ -64,10 +105,14 @@ Requirements:
 
 Article:
 
-{content[:12000]}
+{content}
 """
 
         return self.generate(prompt)
+
+    # ------------------------------------------------------------------
+    # Answer generation
+    # ------------------------------------------------------------------
 
     def answer_question(
         self,
@@ -75,43 +120,29 @@ Article:
         context: str,
         chat_history: str = ""
     ):
+        chat_history = self._truncate_text(chat_history, self.MAX_HISTORY_CHARS)
+        context = self._truncate_text(context, self.MAX_CONTEXT_CHARS)
 
         prompt = f"""
 You are a Senior Cybersecurity Research Analyst.
 
-Use conversation memory to resolve references
-such as:
+Answer ONLY from the retrieved context and recent chat memory.
+Do not introduce unrelated incidents, malware campaigns, or threat actors.
+If the question is about one breach/incident, stay strictly on that breach/incident.
 
-- it
-- they
-- this malware
-- this actor
-- that campaign
+Rules:
+- Never invent facts.
+- If the answer is not present in the retrieved context, say that clearly.
+- Do not mix multiple unrelated incidents together.
+- Prefer concise, incident-specific answers.
 
-If the current question depends on previous messages,
-combine the conversation summary, recent messages,
-and the retrieved context.
-
-Never invent facts.
-Only answer using information present in either:
-
-1. Conversation Summary
-2. Recent Messages
-3. Retrieved Context
-
-If the conversation summary, recent messages, and retrieved context
-do not contain enough information, say so.
-
-Conversation Memory:
-
+Recent Chat Memory:
 {chat_history or "No previous conversation."}
 
 Retrieved Context:
-
-{context}
+{context or "No retrieved context available."}
 
 Question:
-
 {question}
 
 Format the answer exactly like this:
@@ -139,125 +170,88 @@ Formatting rules:
 - Keep each section heading on its own line.
 - Include the colon inside each bold section heading.
 - Do not put body text on the same line as a section heading.
-- Do not add an introductory sentence before the sections.
 - Do not repeat any section.
 - Do not include a Sources section.
+- Keep the answer concise and grounded in the retrieved context.
 """
 
-        answer = self.generate(prompt)
+        try:
+            answer = self.generate(prompt)
+        except ValueError as exc:
+            if str(exc) == "GROQ_PROMPT_TOO_LARGE":
+                # smaller retry prompt
+                mini_history = self._truncate_text(chat_history, 1200)
+                mini_context = self._truncate_text(context, 6000)
 
-        return self._clean_answer(
-            answer
-        )
+                retry_prompt = f"""
+You are a Senior Cybersecurity Research Analyst.
 
-    def _clean_answer(
-        self,
-        answer: str
-    ):
+Answer the question only from the context below.
+Do not mix unrelated incidents.
 
-        lines = answer.strip().splitlines()
-        cleaned_lines = []
-        seen_sections = set()
-        seen_content = set()
-        skip_duplicate_section = False
+Recent Chat Memory:
+{mini_history or "No previous conversation."}
 
-        for line in lines:
+Retrieved Context:
+{mini_context or "No retrieved context available."}
 
-            if self.SOURCES_PATTERN.match(line):
-                break
+Question:
+{question}
 
-            section_match = self.SECTION_PATTERN.match(
-                line
-            )
+Return exactly these sections:
 
-            if section_match:
+**1. Executive Summary:**
+**2. Key Findings:**
+**3. Impact:**
+**4. Recommendations:**
+"""
+                answer = self.generate(retry_prompt)
+            else:
+                raise
 
-                section_name = section_match.group(1).lower()
-                section_body = section_match.group(2).strip()
+        return self._clean_answer(answer)
 
-                if section_name in seen_sections:
-                    skip_duplicate_section = True
-                    continue
-
-                seen_sections.add(
-                    section_name
-                )
-
-                skip_duplicate_section = False
-
-                section_number = self.SECTION_ORDER[section_name]
-                section_title = section_name.title()
-
-                if cleaned_lines and cleaned_lines[-1] != "":
-                    cleaned_lines.append("")
-
-                cleaned_lines.append(
-                    f"**{section_number}. {section_title}:**"
-                )
-                cleaned_lines.append("")
-
-                if section_body:
-                    cleaned_lines.append(
-                        section_body
-                    )
-
-                continue
-
-            if skip_duplicate_section:
-                continue
-
-            normalized_line = line.strip().lower()
-
-            if normalized_line:
-
-                if normalized_line in seen_content:
-                    continue
-
-                seen_content.add(
-                    normalized_line
-                )
-
-            cleaned_lines.append(
-                line
-            )
-
-        return "\n".join(cleaned_lines).strip()
+    # ------------------------------------------------------------------
+    # Query rewriting
+    # ------------------------------------------------------------------
 
     def rewrite_query(
         self,
         question: str,
         chat_history: str = ""
     ):
-
+        """
+        Keep rewrite very small.
+        Only resolve pronouns / vague references.
+        Never expand into unrelated malware campaigns.
+        """
         if not chat_history.strip():
             return question
 
+        compact_history = self._truncate_text(chat_history, 1600)
+
         prompt = f"""
-You rewrite cybersecurity research questions for retrieval.
+You rewrite cybersecurity follow-up questions into standalone retrieval queries.
 
-Use the conversation summary and recent messages to replace references such as:
+Rules:
+- Only resolve references like "it", "they", "the breach", "the attackers".
+- Stay strictly within the same incident/topic already present in chat history.
+- Do NOT add unrelated threat actors, malware families, or extra incidents.
+- If the question is already standalone, return it unchanged.
+- Return exactly one line and nothing else.
 
-- it
-- they
-- this malware
-- this actor
-- that campaign
+Chat History:
+{compact_history}
 
-Return one standalone search query.
-If the question is already standalone, return it unchanged.
-Do not answer the question.
-Do not add facts that are not present in the conversation memory.
-
-Conversation Memory:
-
-{chat_history}
-
-Latest Question:
-
+Question:
 {question}
 """
 
-        rewritten_query = self.generate(prompt).strip()
+        try:
+            rewritten_query = self.generate(prompt).strip()
+        except ValueError:
+            # if prompt too large or any size issue, fallback safely
+            return question
 
         if not rewritten_query:
             return question
@@ -272,11 +266,65 @@ Latest Question:
         )
 
         for prefix in prefixes:
-
-            if rewritten_query.lower().startswith(
-                prefix.lower()
-            ):
-
+            if rewritten_query.lower().startswith(prefix.lower()):
                 rewritten_query = rewritten_query[len(prefix):].strip()
 
         return rewritten_query or question
+
+    # ------------------------------------------------------------------
+    # Output cleanup
+    # ------------------------------------------------------------------
+
+    def _clean_answer(
+        self,
+        answer: str
+    ):
+        lines = answer.strip().splitlines()
+        cleaned_lines = []
+        seen_sections = set()
+        seen_content = set()
+        skip_duplicate_section = False
+
+        for line in lines:
+            if self.SOURCES_PATTERN.match(line):
+                break
+
+            section_match = self.SECTION_PATTERN.match(line)
+
+            if section_match:
+                section_name = section_match.group(1).lower()
+                section_body = section_match.group(2).strip()
+
+                if section_name in seen_sections:
+                    skip_duplicate_section = True
+                    continue
+
+                seen_sections.add(section_name)
+                skip_duplicate_section = False
+
+                section_number = self.SECTION_ORDER[section_name]
+                section_title = section_name.title()
+
+                if cleaned_lines and cleaned_lines[-1] != "":
+                    cleaned_lines.append("")
+
+                cleaned_lines.append(f"**{section_number}. {section_title}:**")
+                cleaned_lines.append("")
+
+                if section_body:
+                    cleaned_lines.append(section_body)
+
+                continue
+
+            if skip_duplicate_section:
+                continue
+
+            normalized_line = line.strip().lower()
+            if normalized_line:
+                if normalized_line in seen_content:
+                    continue
+                seen_content.add(normalized_line)
+
+            cleaned_lines.append(line)
+
+        return "\n".join(cleaned_lines).strip()

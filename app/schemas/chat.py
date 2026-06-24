@@ -10,7 +10,6 @@ class ChatRequest(BaseModel):
 
 
 class CreateChatRequest(BaseModel):
-    user_id: int
     title: str
 
 

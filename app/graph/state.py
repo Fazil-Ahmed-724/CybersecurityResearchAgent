@@ -14,10 +14,15 @@ class GraphState(TypedDict, total=False):
     # Optional plain text history for prompt/debugging if needed
     chat_history_text: str
 
+    # Retrieval / topic context
+    topic_context: Dict[str, Any]
     retrieved_articles: List[Dict[str, Any]]
     context: str
+
+    # Final answer
     answer: str
-    topic_context: Dict[str, Any]
+    answer_sections: Dict[str, str]
+    answer_metadata: Dict[str, Any]
 
     # FINAL OUTPUT FOR ROUTE/UI
     sources: List[Dict[str, Any]]

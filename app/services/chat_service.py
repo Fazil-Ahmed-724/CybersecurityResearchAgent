@@ -95,6 +95,7 @@ class ChatService:
         "behind",
         "stolen",
         "happen",
+        "too",
     }
 
     TOPIC_CANDIDATE_WORDS = {
@@ -126,6 +127,25 @@ class ChatService:
         "bluenoroff",
     }
 
+    # These are entity names that may appear in follow-up questions,
+    # but should NOT become the main incident topic on their own.
+    INCIDENT_ENTITY_WORDS = {
+        "salesforce",
+        "lastpass",
+        "huntress",
+        "recorded",
+        "future",
+        "tanium",
+        "jamf",
+        "gong",
+        "insurity",
+        "sprout",
+        "social",
+    }
+
+    # Only these terms should anchor the incident thread.
+    INCIDENT_ANCHOR_WORDS = {"klue", "oauth", "icarus"}
+
     FOLLOWUP_PRONOUNS = {
         "it", "they", "them", "that", "this", "those", "these",
         "he", "she", "his", "her", "its", "their", "there"
@@ -134,7 +154,7 @@ class ChatService:
     BAD_CONTEXT_TERMS = {
         "executive", "summary", "key", "findings", "impact", "recommendations",
         "stolen", "attackers", "companies", "data", "incident", "breach",
-        "happened", "linked", "affected"
+        "happened", "linked", "affected", "too"
     }
 
     GENERIC_QUESTION_PATTERNS = [
@@ -274,6 +294,15 @@ class ChatService:
         return result[:10]
 
     def _extract_context_topic_from_text(self, text_value: str) -> Optional[str]:
+        """
+        Build the main incident topic from previous resolved questions / assistant messages.
+
+        Rules:
+        - Prefer incident anchor words like klue/oauth/icarus.
+        - Do NOT let entity follow-up words like lastpass/huntress/salesforce
+          become the main topic by themselves.
+        - If anchor words exist, return only anchor topic.
+        """
         if not text_value:
             return None
 
@@ -290,22 +319,28 @@ class ChatService:
             if token in self.BAD_CONTEXT_TERMS:
                 continue
 
-            if token in self.TOPIC_CANDIDATE_WORDS:
+            if token in self.INCIDENT_ANCHOR_WORDS:
                 preferred.append(token)
             else:
                 fallback.append(token)
 
-        seen = set()
-        ordered = []
-        for token in preferred + fallback:
-            if token not in seen:
-                seen.add(token)
-                ordered.append(token)
+        preferred = list(dict.fromkeys(preferred))
+        fallback = list(dict.fromkeys(fallback))
 
-        if not ordered:
-            return None
+        # If we have incident anchors, only use those as topic
+        if preferred:
+            return " ".join(preferred[:3])
 
-        return " ".join(ordered[:4])
+        # Otherwise use non-entity fallback words only
+        strong_topic = [
+            t for t in fallback
+            if t not in self.INCIDENT_ENTITY_WORDS
+        ]
+
+        if strong_topic:
+            return " ".join(strong_topic[:4])
+
+        return None
 
     def _extract_last_assistant_resolved_question(self, messages) -> Optional[str]:
         for message in reversed(messages):
@@ -334,9 +369,22 @@ class ChatService:
         return None
 
     def _extract_best_context_topic(self, messages, chat_title: str | None = None) -> Optional[str]:
+        """
+        Priority:
+        1. last assistant resolved question
+        2. last user resolved question
+        3. assistant message content
+        4. chat title
+        """
         assistant_resolved = self._extract_last_assistant_resolved_question(messages)
         if assistant_resolved:
             topic = self._extract_context_topic_from_text(assistant_resolved)
+            if topic:
+                return topic
+
+        user_resolved = self._extract_last_user_resolved_question(messages)
+        if user_resolved:
+            topic = self._extract_context_topic_from_text(user_resolved)
             if topic:
                 return topic
 
@@ -349,12 +397,6 @@ class ChatService:
             if topic:
                 return topic
 
-        user_resolved = self._extract_last_user_resolved_question(messages)
-        if user_resolved:
-            topic = self._extract_context_topic_from_text(user_resolved)
-            if topic:
-                return topic
-
         if chat_title:
             topic = self._extract_context_topic_from_text(chat_title)
             if topic:
@@ -364,16 +406,28 @@ class ChatService:
 
     def _contains_explicit_topic(self, question: str) -> bool:
         tokens = set(self._tokenize(question))
-        return any(token in self.TOPIC_CANDIDATE_WORDS for token in tokens)
+        return any(token in self.INCIDENT_ANCHOR_WORDS for token in tokens)
 
     def _compose_incident_question(self, question: str, topic: str, suffix: str) -> str:
         question = (question or "").strip()
         question = question.rstrip(" ?")
 
-        if re.search(r"\b(in|about)\b", question.lower()):
+        # If question already contains the exact topic, keep it as-is
+        if topic and topic.lower() in question.lower():
             return f"{question}?"
 
         return f"{question} {suffix.format(topic=topic)}?"
+
+    def _looks_like_entity_followup(self, question: str) -> bool:
+        q = self._normalize_question(question)
+
+        patterns = [
+            r"^was\s+[a-z0-9._-]+\s+affected(\s+too)?\??$",
+            r"^what about\s+[a-z0-9._ -]+\??$",
+            r"^did\s+[a-z0-9._ -]+\??$",
+            r"^is\s+[a-z0-9._ -]+\s+(involved|affected|impacted)\??$",
+        ]
+        return any(re.match(p, q) for p in patterns)
 
     # ----------------------------------
     # Follow-up detection
@@ -384,17 +438,24 @@ class ChatService:
         if not question:
             return False
 
-        # if question already contains explicit incident/topic words,
-        # treat it as standalone unless it also has a pronoun signal
-        if self._contains_explicit_topic(question):
-            return self._has_pronoun_followup_signal(question)
+        lower_question = question.lower()
 
-        # clear pronoun / reference signal => follow-up
+        # 1) explicit incident topic => standalone
+        if self._contains_explicit_topic(question):
+            return False
+
+        # 2) pronoun signal => follow-up
         if self._has_pronoun_followup_signal(question):
             return True
 
-        lower_question = question.lower()
+        # 3) entity follow-up => follow-up if chat has history
+        if self._looks_like_entity_followup(question):
+            if chat_id:
+                messages = self.get_recent_messages(chat_id, limit=12)
+                return len(messages) > 0
+            return True
 
+        # 4) generic follow-up patterns
         followup_patterns = [
             r"\bwhat about\b",
             r"\bhow about\b",
@@ -410,7 +471,6 @@ class ChatService:
         ]
 
         if any(re.search(pattern, lower_question) for pattern in followup_patterns):
-            # only treat as follow-up if there is actually history/context
             if chat_id:
                 messages = self.get_recent_messages(chat_id, limit=12)
                 return len(messages) > 0
@@ -446,6 +506,14 @@ class ChatService:
             return current_question
 
         question_lower = current_question.lower()
+
+        # Entity follow-ups must ALWAYS stay tied to incident anchor
+        if self._looks_like_entity_followup(current_question):
+            return self._compose_incident_question(
+                current_question,
+                topic,
+                "in the {topic} incident"
+            )
 
         if any(p in question_lower for p in ["what happened", "summarize", "summary", "overview"]):
             return self._compose_incident_question(

@@ -179,6 +179,7 @@ def generate_answer_node(state: GraphState) -> GraphState:
     resolved_question = _safe_str(state.get("resolved_question")) or question
     context = _safe_str(state.get("context"))
     sources = state.get("sources", []) or []
+    topic_context = state.get("topic_context") or {}
 
     llm = LLMService()
 
@@ -189,17 +190,37 @@ def generate_answer_node(state: GraphState) -> GraphState:
         return {
             **state,
             "answer": fallback,
+            "answer_sections": {
+                "executive_summary": fallback,
+                "key_findings": "",
+                "impact": "",
+                "recommendations": "",
+            },
+            "answer_metadata": {
+                "resolved_question": resolved_question,
+                "topic_context": topic_context,
+                "used_context": False,
+            },
             "sources": sources,
         }
 
     prompt = f"""
-You are a cybersecurity research assistant.
+You are a cybersecurity research assistant producing evidence-based incident answers.
 
-Answer the user's question using ONLY the provided context.
-If the question is a follow-up, use the resolved question as the primary meaning.
-Do not invent facts not present in the context.
-If multiple sources mention affected organizations, merge them carefully.
-If the context is partial, say so clearly.
+You MUST answer ONLY from the supplied context.
+Do NOT invent facts, organizations, attackers, victim counts, timelines, or technical details.
+If a requested fact is not explicitly present in the context, say:
+"Not explicitly stated in the retrieved sources."
+
+Important behavior rules:
+1. Treat the RESOLVED QUESTION as the main meaning of the user request.
+2. Distinguish clearly between:
+   - facts explicitly stated in the sources
+   - cautious synthesis across multiple sources
+3. Do not claim certainty where the context is partial or conflicting.
+4. Do not add a Sources section.
+5. Keep the answer specific to the resolved question, not a generic article summary.
+6. Do not repeat the same point in multiple sections unless necessary.
 
 User Question:
 {question}
@@ -207,20 +228,30 @@ User Question:
 Resolved Question:
 {resolved_question}
 
+Topic Context:
+{topic_context}
+
 Context:
 {context}
 
-Return a clear structured answer with:
-1. Executive Summary
-2. Key Findings
-3. Impact
-4. Recommendations
+Return the answer in EXACTLY this structure:
 
-Formatting rules:
-- Include each section exactly once.
-- Do not include a Sources section.
-- Do not repeat the same facts across sections unless needed for clarity.
-- Keep the answer concise and specific to the resolved question.
+1. Executive Summary
+- 1 short paragraph focused on the resolved question.
+
+2. Key Findings
+- 3 to 6 bullet points
+- Only include findings supported by the context
+- If a requested detail is missing, include one bullet saying:
+  "Not explicitly stated in the retrieved sources."
+
+3. Impact
+- 1 short paragraph describing operational / data / customer / business impact if supported
+- If impact is unclear, say so
+
+4. Recommendations
+- 3 to 5 bullet points
+- Only include recommendations that logically follow from the incident/context
 """.strip()
 
     answer = llm.generate(prompt)
@@ -233,5 +264,11 @@ Formatting rules:
     return {
         **state,
         "answer": answer,
+        "answer_sections": {},
+        "answer_metadata": {
+            "resolved_question": resolved_question,
+            "topic_context": topic_context,
+            "used_context": True,
+        },
         "sources": sources,
     }

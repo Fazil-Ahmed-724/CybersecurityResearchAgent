@@ -7,7 +7,6 @@ from app.graph.nodes import (
     generate_answer_node,
 )
 
-
 graph = StateGraph(GraphState)
 
 graph.add_node("retrieve_articles", retrieve_articles_node)

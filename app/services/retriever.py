@@ -15,6 +15,7 @@ class Retriever:
     - requires incident overlap when follow-up context exists
     - tightens generic first-turn questions
     - keeps incident anchors (klue/oauth/icarus) stable across entity follow-ups
+    - strongly prefers the explicitly asked follow-up entity
     """
 
     DEBUG_RESULT_LIMIT = 10
@@ -58,10 +59,8 @@ class Retriever:
         "impact", "impacted", "targeted", "related", "involved", "too"
     }
 
-    # Stable incident anchors
     INCIDENT_ANCHORS = {"klue", "oauth", "icarus"}
 
-    # Entity names that can appear in a follow-up question but should not replace the incident topic
     INCIDENT_ENTITY_TERMS = {
         "salesforce", "lastpass", "huntress",
         "recorded", "future", "tanium", "jamf", "gong", "insurity", "sprout", "social",
@@ -85,7 +84,7 @@ class Retriever:
     ]
 
     ENTITY_FOLLOWUP_PATTERNS = [
-        r"^was\s+[a-z0-9._-]+\s+affected(\s+too)?\??$",
+        r"^was\s+[a-z0-9._ -]+\s+affected(\s+too)?\??$",
         r"^what about\s+[a-z0-9._ -]+\??$",
         r"^did\s+[a-z0-9._ -]+\??$",
         r"^is\s+[a-z0-9._ -]+\s+(involved|affected|impacted)\??$",
@@ -184,6 +183,30 @@ class Retriever:
                 anchors.append(token)
         return anchors
 
+    def _extract_followup_target_entities(self, original_question: str) -> List[str]:
+        """
+        Extract only the explicitly asked entity from a follow-up question.
+        Examples:
+          - What about Huntress? -> ['huntress']
+          - Was LastPass affected too? -> ['lastpass']
+          - Did Salesforce disable the integration? -> ['salesforce']
+        """
+        if not self._is_entity_followup_question(original_question):
+            return []
+
+        entities = self._extract_entities(original_question)
+        targets = []
+
+        for ent in entities:
+            if ent in self.INCIDENT_ANCHORS:
+                continue
+            if ent in self.QUESTION_FILLER:
+                continue
+            if ent not in targets:
+                targets.append(ent)
+
+        return targets[:3]
+
     # ------------------------------------------------------------------
     # Topic context
     # ------------------------------------------------------------------
@@ -224,12 +247,10 @@ class Retriever:
                 if a not in anchor_terms:
                     anchor_terms.append(a)
 
-        # Always seed with resolved/current turn first
         add_from_text(resolved_question, allow_entities=True)
         add_from_text(original_question, allow_entities=True)
 
         recent = chat_history[-12:] if len(chat_history) > 12 else chat_history
-
         is_entity_followup = self._is_entity_followup_question(original_question)
 
         for item in reversed(recent):
@@ -243,14 +264,13 @@ class Retriever:
             if not source_text:
                 continue
 
-            # Always harvest only anchors from history first
             history_anchors = self._extract_anchor_terms(source_text)
             for a in history_anchors:
                 if a not in anchor_terms:
                     anchor_terms.append(a)
 
-            # For entity follow-up questions, do NOT import sibling entities/keywords
-            # from previous turns (e.g. LastPass should not leak into Huntress turn).
+            # IMPORTANT:
+            # For entity follow-up, do not leak sibling entities from previous turns.
             if not is_entity_followup:
                 hist_entities = self._extract_entities(source_text)
                 for ent in hist_entities:
@@ -265,23 +285,19 @@ class Retriever:
             if len(terms) >= 15 and len(entities) >= 12 and len(anchor_terms) >= 3:
                 break
 
-        # cleanup
         terms = [t for t in terms if t not in self.QUESTION_FILLER]
         entities = [e for e in entities if e not in self.QUESTION_FILLER]
 
         ordered_entities = []
 
-        # 1) anchors always first
         for a in ["klue", "oauth", "icarus"]:
             if a in anchor_terms and a not in ordered_entities:
                 ordered_entities.append(a)
 
-        # 2) current follow-up entity next (e.g. huntress)
         for ent in current_question_entities:
             if ent not in ordered_entities:
                 ordered_entities.append(ent)
 
-        # 3) only for non-entity-followups, allow older context entities
         if not is_entity_followup:
             for p in [
                 "salesforce", "lastpass", "huntress",
@@ -294,6 +310,7 @@ class Retriever:
             for e in entities:
                 if e not in ordered_entities:
                     ordered_entities.append(e)
+
         if is_entity_followup:
             current_keyword_set = set(current_question_entities) | set(anchor_terms)
             filtered_terms = []
@@ -303,11 +320,13 @@ class Retriever:
                     filtered_terms.append(term)
 
             terms = filtered_terms
+
         return {
             "keywords": terms[:15],
             "entities": ordered_entities[:12],
             "anchors": anchor_terms[:3],
         }
+
     # ------------------------------------------------------------------
     # Query rewrite
     # ------------------------------------------------------------------
@@ -323,19 +342,15 @@ class Retriever:
         entities = topic_context.get("entities", [])[:6]
         anchors = topic_context.get("anchors", [])[:3]
 
-        # If base already contains anchor words, use it directly
         if any(a in lower_base for a in anchors):
             return base
 
-        # Entity follow-up must always carry incident anchors
         if self._is_entity_followup_question(original_question) and anchors:
             return f"{base} {' '.join(anchors)}"
 
-        # fallback: enrich with anchors first
         if anchors:
             return f"{base} {' '.join(anchors)}"
 
-        # fallback: enrich with top entities
         if entities:
             return f"{base} {' '.join(entities[:4])}"
 
@@ -452,7 +467,14 @@ class Retriever:
         title_bonus = 0.0
         incident_bonus = 0.0
         entity_followup_bonus = 0.0
+        target_entity_bonus = 0.0
 
+        is_entity_followup = self._is_entity_followup_question(original_question)
+        followup_targets = self._extract_followup_target_entities(original_question)
+
+        # ------------------------------------------------------------
+        # Base query keyword scoring
+        # ------------------------------------------------------------
         for kw in query_keywords:
             if kw in self.GENERIC_MATCH_TERMS:
                 continue
@@ -464,6 +486,9 @@ class Retriever:
             if kw in title_lower:
                 title_bonus += 0.45
 
+        # ------------------------------------------------------------
+        # Base query entity scoring
+        # ------------------------------------------------------------
         for ent in query_entities:
             if ent in self.GENERIC_MATCH_TERMS:
                 continue
@@ -475,6 +500,9 @@ class Retriever:
             if ent in title_lower:
                 title_bonus += 0.55
 
+        # ------------------------------------------------------------
+        # Topic keyword/entity scoring
+        # ------------------------------------------------------------
         for kw in topic_keywords[:8]:
             if kw in self.GENERIC_MATCH_TERMS:
                 continue
@@ -509,6 +537,27 @@ class Retriever:
 
         if incident_overlap > 0:
             incident_bonus += min(3.0, incident_overlap * 0.9)
+
+        # ------------------------------------------------------------
+        # FOLLOW-UP TARGET BOOST
+        # This is the important patch.
+        # If user asks about Huntress/LastPass/Salesforce, heavily prefer
+        # articles that explicitly mention that entity.
+        # ------------------------------------------------------------
+        if is_entity_followup and followup_targets:
+            matched_target = False
+
+            for ent in followup_targets:
+                if ent in combined:
+                    matched_target = True
+                    target_entity_bonus += 6.0
+                    if ent in title_lower:
+                        target_entity_bonus += 4.0
+
+            # If the article does NOT mention the asked target entity,
+            # penalize it so generic incident articles drop below target article.
+            if not matched_target:
+                target_entity_bonus -= 5.0
 
         meaningful_entities = [
             e for e in query_entities
@@ -550,6 +599,7 @@ class Retriever:
             + title_bonus
             + incident_bonus
             + entity_followup_bonus
+            + target_entity_bonus
             - penalty
         )
 
@@ -562,6 +612,7 @@ class Retriever:
             "title": round(title_bonus, 2),
             "incident": round(incident_bonus, 2),
             "entity_followup": round(entity_followup_bonus, 2),
+            "target_bonus": round(target_entity_bonus, 2),
             "incident_overlap_count": incident_overlap,
             "pen": round(penalty, 2),
         }
@@ -654,8 +705,8 @@ class Retriever:
                 f"{score:0.3f} | {source_name} | {article_title} | "
                 f"vs={bd['vs']:.2f} km={bd['km']:.2f} em={bd['em']:.2f} "
                 f"tk={bd['tk']:.2f} te={bd['te']:.2f} title={bd['title']:.2f} "
-                f"incident={bd['incident']:.2f} overlap={bd['incident_overlap_count']} "
-                f"pen={bd['pen']:.2f}"
+                f"incident={bd['incident']:.2f} target={bd.get('target_bonus', 0):.2f} "
+                f"overlap={bd['incident_overlap_count']} pen={bd['pen']:.2f}"
             )
 
         if not filtered_scored:

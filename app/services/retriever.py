@@ -1,476 +1,588 @@
-import re
-from typing import Any
+from __future__ import annotations
 
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.database.db import SessionLocal
-from app.services.embedding_service import EmbeddingService
-
-
-STOPWORDS = {
-    "the", "a", "an", "and", "or", "but", "for", "with", "from", "into", "onto",
-    "what", "which", "who", "when", "where", "why", "how", "did", "does", "do",
-    "is", "are", "was", "were", "be", "been", "being", "it", "its", "they", "them",
-    "their", "this", "that", "these", "those", "to", "of", "in", "on", "at", "by",
-    "about", "after", "before", "during", "over", "under", "linked", "related",
-    "happened", "incident", "breach", "attack", "attacks", "hack", "hacked",
-    "user", "assistant", "chat", "question", "answer"
-}
-
-FOLLOWUP_TRIGGER_WORDS = {
-    "it",
-    "they",
-    "them",
-    "their",
-    "those",
-    "that",
-    "this",
-    "attackers",
-    "victims",
-    "affected",
-    "stolen",
-    "linked",
-    "companies",
-    "data",
-}
+from app.models.article import Article
 
 
 class Retriever:
+    """
+    Retrieval service with follow-up hardening:
+    - removes generic question words from scoring
+    - prefers real incident/entity terms
+    - requires incident overlap when follow-up context exists
+    - tightens generic first-turn questions
+    """
+
+    DEBUG_RESULT_LIMIT = 10
+    MIN_FINAL_SCORE = 2.0
+    MIN_PRIMARY_MATCH = 1.5
+    MIN_TOPIC_ONLY_MATCH = 2.5
+
+    FOLLOWUP_MIN_SCORE = 12.0
+    FOLLOWUP_MIN_PRIMARY = 6.0
+    FOLLOWUP_MIN_TOPIC = 6.0
+    FIRST_TURN_INCIDENT_MIN_SCORE = 10.0
+
+    STOPWORDS = {
+        "the", "a", "an", "and", "or", "but", "if", "then", "else", "when",
+        "what", "which", "who", "where", "why", "how", "is", "are", "was", "were",
+        "be", "been", "being", "do", "does", "did", "done", "have", "has", "had",
+        "of", "to", "in", "on", "for", "by", "with", "about", "into", "from",
+        "that", "this", "these", "those", "it", "its", "they", "them", "their",
+        "there", "here", "you", "your", "we", "our", "as", "at", "than", "after",
+        "before", "during", "over", "under", "again", "more", "most"
+    }
+
+    JUNK_TOPIC_WORDS = {
+        "executive", "summary", "key", "findings", "recommendation", "recommendations",
+        "impact", "report", "reports", "source", "sources", "article", "articles",
+        "response", "answer", "details", "background", "context"
+    }
+
+    # These are generic question intent words and should not be treated
+    # as meaningful retrieval keywords/entities.
+    QUESTION_FILLER = {
+        "what", "which", "who", "where", "why", "how",
+        "affected", "stolen", "happened", "linked", "known", "tell",
+        "about", "more", "data", "company", "companies", "attacker", "attackers",
+        "behind", "victims", "incident", "breach", "impact", "impacted",
+        "targeted", "related", "involved"
+    }
+
+    # Extra generic words that should never contribute to keyword/entity scoring.
+    GENERIC_MATCH_TERMS = {
+        "affected", "stolen", "happened", "linked", "data",
+        "company", "companies", "attacker", "attackers",
+        "behind", "victims", "incident", "breach",
+        "impact", "impacted", "targeted", "related", "involved"
+    }
+
+    INCIDENT_TERMS = {
+        "klue", "oauth", "icarus", "salesforce", "lastpass", "huntress",
+        "recorded", "future", "tanium", "jamf", "gong", "insurity", "sprout", "social",
+        "fortinet", "fortisandbox", "fortibleed", "wordpress", "clickfix",
+        "whatsapp", "microsoft", "lazarus", "bluenoroff"
+    }
+
+    GENERIC_QUESTION_PATTERNS = [
+        r"^what happened(?: in .+)?\??$",
+        r"^what data was stolen(?: in .+)?\??$",
+        r"^what was stolen(?: in .+)?\??$",
+        r"^which companies were affected(?: in .+)?\??$",
+        r"^who was affected(?: in .+)?\??$",
+        r"^who was impacted(?: in .+)?\??$",
+        r"^which attackers were linked to it(?: in .+)?\??$",
+        r"^who was behind it(?: in .+)?\??$",
+        r"^who were they(?: in .+)?\??$",
+    ]
+
     def __init__(self):
-        self.embedding_service = EmbeddingService()
+        self.db = SessionLocal()
 
-    def search(
-        self,
-        query: str,
-        limit: int = 3,
-        chat_history: str | None = None,
-        original_question: str | None = None,
-        resolved_question: str | None = None,
-        topic_context: dict | None = None,
-    ) -> dict:
-        db: Session = SessionLocal()
-        try:
-            raw_query = (query or "").strip()
-            original_question = (original_question or raw_query).strip()
-            resolved_question = (resolved_question or raw_query).strip()
+    # ------------------------------------------------------------------
+    # Text helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize(text_value: str) -> str:
+        text_value = text_value or ""
+        text_value = text_value.strip()
+        text_value = re.sub(r"\s+", " ", text_value)
+        return text_value
 
-            if not resolved_question:
-                return {
-                    "rewritten_query": "",
-                    "topic_context": {"entities": [], "keywords": []},
-                    "results": [],
-                }
+    @staticmethod
+    def _tokenize(text_value: str) -> List[str]:
+        return re.findall(r"[a-zA-Z0-9\-\+']+", (text_value or "").lower())
 
-            built_topic_context = self._build_topic_context(
-                query=resolved_question,
-                original_question=original_question,
-                chat_history=chat_history or "",
-                topic_context=topic_context or {},
-            )
+    def _clean_terms(self, terms: List[str]) -> List[str]:
+        cleaned = []
+        seen = set()
 
-            rewritten_query = self._build_rewritten_query(
-                query=resolved_question,
-                topic_context=built_topic_context,
-            )
+        for t in terms:
+            t = (t or "").strip().lower()
+            if not t:
+                continue
+            if len(t) <= 2:
+                continue
+            if t in self.STOPWORDS:
+                continue
+            if t in self.JUNK_TOPIC_WORDS:
+                continue
+            if t in self.QUESTION_FILLER:
+                continue
+            if t not in seen:
+                seen.add(t)
+                cleaned.append(t)
 
-            query_embedding = self.embedding_service.embed_query(rewritten_query)
+        return cleaned
 
-            keywords = self._extract_keywords(rewritten_query)
-            entities = self._extract_entities(rewritten_query)
+    def _extract_keywords(self, text_value: str) -> List[str]:
+        tokens = self._tokenize(text_value)
+        tokens = [
+            t for t in tokens
+            if len(t) > 2
+            and t not in self.STOPWORDS
+            and t not in self.JUNK_TOPIC_WORDS
+            and t not in self.QUESTION_FILLER
+        ]
 
-            topic_entities = [
-                x.lower() for x in built_topic_context.get("entities", []) if x
-            ]
-            topic_keywords = [
-                x.lower() for x in built_topic_context.get("keywords", []) if x
-            ]
+        seen = set()
+        result = []
+        for t in tokens:
+            if t not in seen:
+                seen.add(t)
+                result.append(t)
+        return result[:12]
 
-            followup_mode = self._is_followup_query(original_question)
+    def _extract_entities(self, text_value: str) -> List[str]:
+        keywords = self._extract_keywords(text_value)
+        entities = []
 
-            all_query_terms = self._dedupe_preserve_order(
-                keywords + entities + topic_keywords + topic_entities
-            )
+        priority_terms = [
+            "klue", "oauth", "icarus", "salesforce", "lastpass", "huntress",
+            "recorded", "future", "tanium", "jamf", "gong", "insurity", "sprout", "social"
+        ]
 
-            sql = text(
-                """
-                SELECT
-                    id,
-                    title,
-                    source,
-                    url,
-                    summary,
-                    content,
-                    published_at,
-                    (
-                        1 - (embedding <=> CAST(:query_embedding AS vector))
-                    ) AS similarity
-                FROM articles
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> CAST(:query_embedding AS vector)
-                LIMIT 25
-                """
-            )
+        for p in priority_terms:
+            if p in keywords and p not in entities:
+                entities.append(p)
 
-            rows = db.execute(
-                sql,
-                {
-                    "query_embedding": self._vector_to_pg(query_embedding),
-                },
-            ).mappings().all()
+        for kw in keywords:
+            if kw not in entities:
+                entities.append(kw)
 
-            scored_results = []
+        return entities[:12]
 
-            for row in rows:
-                title = row["title"] or ""
-                summary = row["summary"] or ""
-                content = row["content"] or ""
-                source = row["source"] or ""
+    def _is_generic_question(self, question: str) -> bool:
+        q = self._normalize(question).lower()
+        return any(re.match(pattern, q) for pattern in self.GENERIC_QUESTION_PATTERNS)
 
-                combined_text = f"{title}\n{summary}\n{content}".lower()
-
-                keyword_match = self._keyword_match_score(combined_text, keywords)
-                entity_match = self._keyword_match_score(combined_text, entities)
-
-                topic_keyword_match = self._keyword_match_score(combined_text, topic_keywords)
-                topic_entity_match = self._keyword_match_score(combined_text, topic_entities)
-
-                title_match_bonus = self._title_match_bonus(title.lower(), all_query_terms)
-
-                topic_overlap_count = self._overlap_count(
-                    combined_text,
-                    topic_entities + topic_keywords
-                )
-                direct_query_overlap = self._overlap_count(
-                    combined_text,
-                    keywords + entities
-                )
-
-                penalty = 0.0
-
-                if followup_mode and topic_entities:
-                    if topic_overlap_count == 0:
-                        penalty += 1.40
-                    elif topic_overlap_count == 1:
-                        penalty += 0.45
-
-                if direct_query_overlap == 0 and topic_overlap_count == 0:
-                    penalty += 0.80
-                elif direct_query_overlap == 0 and topic_overlap_count <= 1:
-                    penalty += 0.35
-
-                if self._looks_generic_roundup(title.lower()):
-                    penalty += 0.40
-
-                vector_similarity = float(row["similarity"] or 0.0)
-
-                score = (
-                    (vector_similarity * 1.9)
-                    + (keyword_match * 1.2)
-                    + (entity_match * 1.3)
-                    + (topic_keyword_match * 1.5)
-                    + (topic_entity_match * 1.8)
-                    + title_match_bonus
-                    - penalty
-                )
-
-                scored_results.append(
-                    {
-                        "id": row["id"],
-                        "title": row["title"],
-                        "source": source,
-                        "url": row["url"],
-                        "summary": summary,
-                        "content": content,
-                        "published_at": row["published_at"],
-                        "score": score,
-                        "vector_similarity": vector_similarity,
-                        "keyword_match": keyword_match,
-                        "entity_match": entity_match,
-                        "topic_keyword_match": topic_keyword_match,
-                        "topic_entity_match": topic_entity_match,
-                        "title_match_bonus": title_match_bonus,
-                        "penalty": penalty,
-                        "topic_overlap_count": topic_overlap_count,
-                        "direct_query_overlap": direct_query_overlap,
-                    }
-                )
-
-            scored_results.sort(key=lambda x: x["score"], reverse=True)
-
-            print("\n" + "=" * 90)
-            print("RETRIEVER RESULTS")
-            print("=" * 90)
-            print(f"Original Question : {original_question}")
-            print(f"Resolved Question : {resolved_question}")
-            print(f"Rewritten Query   : {rewritten_query}")
-            print(f"Keywords          : {keywords}")
-            print(f"Entities          : {entities}")
-            print(f"Topic keywords    : {topic_keywords}")
-            print(f"Topic entities    : {topic_entities}")
-            print(f"Follow-up mode    : {followup_mode}")
-
-            for item in scored_results[:10]:
-                print(
-                    f"{item['score']:.3f} | {item['source']} | {item['title']} | "
-                    f"vs={item['vector_similarity']:.2f} "
-                    f"km={item['keyword_match']:.2f} "
-                    f"em={item['entity_match']:.2f} "
-                    f"tk={item['topic_keyword_match']:.2f} "
-                    f"te={item['topic_entity_match']:.2f} "
-                    f"title={item['title_match_bonus']:.2f} "
-                    f"pen={item['penalty']:.2f}"
-                )
-
-            final_results = self._select_final_results(
-                scored_results=scored_results,
-                limit=limit,
-                topic_terms=self._dedupe_preserve_order(topic_entities + topic_keywords),
-                followup_mode=followup_mode,
-            )
-
-            print(f"\nReturning {len(final_results)} final results")
-
-            return {
-                "rewritten_query": rewritten_query,
-                "topic_context": built_topic_context,
-                "results": final_results,
-            }
-
-        finally:
-            db.close()
-
+    # ------------------------------------------------------------------
+    # Topic context
+    # ------------------------------------------------------------------
     def _build_topic_context(
         self,
-        query: str,
         original_question: str,
-        chat_history: str,
-        topic_context: dict,
-    ) -> dict:
-        entities = []
-        keywords = []
+        resolved_question: str,
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, List[str]]:
+        chat_history = chat_history or []
 
-        entities.extend(topic_context.get("entities", []) or [])
-        keywords.extend(topic_context.get("keywords", []) or [])
+        terms: List[str] = []
+        entities: List[str] = []
 
-        entities.extend(self._extract_entities(query))
-        keywords.extend(self._extract_keywords(query))
+        def add_from_text(text_value: str):
+            kws = self._extract_keywords(text_value)
+            ents = self._extract_entities(text_value)
 
-        entities.extend(self._extract_entities(original_question))
-        keywords.extend(self._extract_keywords(original_question))
+            for kw in kws:
+                if kw not in terms:
+                    terms.append(kw)
+            for ent in ents:
+                if ent not in entities:
+                    entities.append(ent)
 
-        history_entities, history_keywords = self._extract_topic_from_history(chat_history)
-        entities.extend(history_entities)
-        keywords.extend(history_keywords)
+        add_from_text(original_question)
+        add_from_text(resolved_question)
 
-        return {
-            "entities": self._dedupe_preserve_order(entities),
-            "keywords": self._dedupe_preserve_order(keywords),
-        }
+        recent = chat_history[-12:] if len(chat_history) > 12 else chat_history
 
-    def _build_rewritten_query(self, query: str, topic_context: dict) -> str:
-        query = (query or "").strip()
-        if not query:
-            return ""
-
-        entities = topic_context.get("entities", [])[:5]
-        keywords = topic_context.get("keywords", [])[:5]
-
-        base_terms = self._dedupe_preserve_order(entities + keywords)
-
-        query_terms = self._extract_keywords(query) + self._extract_entities(query)
-        query_terms = self._dedupe_preserve_order(query_terms)
-
-        missing = [t for t in base_terms if t not in query_terms]
-
-        if not missing:
-            return query
-
-        extra = " ".join(missing[:4])
-        return f"{query} {extra}".strip()
-
-    def _extract_topic_from_history(self, chat_history: str) -> tuple[list[str], list[str]]:
-        if not chat_history:
-            return [], []
-
-        lines = [line.strip() for line in chat_history.splitlines() if line.strip()]
-        tail = "\n".join(lines[-12:])
-
-        entities = self._extract_entities(tail)
-        keywords = self._extract_keywords(tail)
-
-        return entities[:12], keywords[:20]
-
-    def _select_final_results(
-        self,
-        scored_results: list[dict],
-        limit: int,
-        topic_terms: list[str],
-        followup_mode: bool,
-    ) -> list[dict]:
-        if not scored_results:
-            return []
-
-        strong_results = [item for item in scored_results if item["score"] >= 1.10]
-
-        if not strong_results:
-            strong_results = scored_results[:limit]
-
-        if followup_mode and topic_terms:
-            topic_filtered = [
-                x for x in strong_results
-                if x["topic_overlap_count"] > 0
-            ]
-            if len(topic_filtered) >= 1:
-                strong_results = topic_filtered
-
-        final = []
-        seen_ids = set()
-
-        for item in strong_results:
-            if item["id"] in seen_ids:
+        for item in reversed(recent):
+            if (item.get("role") or "").lower() != "user":
                 continue
 
-            if followup_mode and topic_terms:
-                if item["topic_overlap_count"] == 0:
-                    continue
+            metadata = item.get("metadata") or {}
+            resolved = metadata.get("resolved_question")
+            content = item.get("content") or ""
 
-            final.append(self._strip_debug_fields(item))
-            seen_ids.add(item["id"])
+            if resolved:
+                add_from_text(resolved)
+            elif content:
+                add_from_text(content)
 
-            if len(final) >= limit:
+            if len(terms) >= 15 and len(entities) >= 10:
                 break
 
-        if not final:
-            for item in scored_results[:limit]:
-                if item["id"] in seen_ids:
-                    continue
-                final.append(self._strip_debug_fields(item))
-                seen_ids.add(item["id"])
+        terms = [t for t in terms if t not in self.QUESTION_FILLER]
+        entities = [e for e in entities if e not in self.QUESTION_FILLER]
 
-        return final
-
-    def _strip_debug_fields(self, item: dict) -> dict:
-        summary = item["summary"] or ""
-        content = item["content"] or ""
-
-        if len(summary) > 1500:
-            summary = summary[:1500].rstrip() + "..."
-
-        if len(content) > 3000:
-            content = content[:3000].rstrip() + "..."
+        preferred = ["klue", "oauth", "icarus", "salesforce", "lastpass", "huntress"]
+        ordered_entities = []
+        for p in preferred:
+            if p in entities and p not in ordered_entities:
+                ordered_entities.append(p)
+        for e in entities:
+            if e not in ordered_entities:
+                ordered_entities.append(e)
 
         return {
-            "id": item["id"],
-            "title": item["title"],
-            "source": item["source"],
-            "url": item["url"],
-            "summary": summary,
-            "content": content,
-            "published_at": item["published_at"],
+            "keywords": terms[:15],
+            "entities": ordered_entities[:10],
         }
 
-    def _is_followup_query(self, raw_query: str) -> bool:
-        raw = (raw_query or "").lower().strip()
-        if not raw:
-            return False
+    # ------------------------------------------------------------------
+    # Query rewrite
+    # ------------------------------------------------------------------
+    def _build_rewritten_query(
+        self,
+        original_question: str,
+        resolved_question: str,
+        topic_context: Dict[str, List[str]],
+    ) -> str:
+        base = self._normalize(resolved_question or original_question)
+        lower_base = base.lower()
+        entities = topic_context.get("entities", [])[:4]
 
-        tokens = set(self._tokenize(raw))
-        return any(word in tokens for word in FOLLOWUP_TRIGGER_WORDS)
+        if any(e in lower_base for e in entities):
+            return base
 
-    def _extract_keywords(self, text_value: str) -> list[str]:
-        words = self._tokenize(text_value)
-        keywords = [
-            word for word in words
-            if len(word) > 2 and word not in STOPWORDS
-        ]
-        return self._dedupe_preserve_order(keywords)
+        if entities:
+            return f"{base} {' '.join(entities)}"
 
-    def _extract_entities(self, text_value: str) -> list[str]:
-        if not text_value:
-            return []
+        return base
 
-        original_tokens = re.findall(r"[A-Za-z0-9\-\']+", text_value)
-        entities = []
-
-        for token in original_tokens:
-            token_clean = token.strip().lower()
-            if len(token_clean) <= 2:
-                continue
-            if token_clean in STOPWORDS:
-                continue
-
-            if token[0].isupper() or any(ch.isdigit() for ch in token) or "-" in token:
-                entities.append(token_clean)
-
-        return self._dedupe_preserve_order(entities)
-
-    def _keyword_match_score(self, text_value: str, terms: list[str]) -> float:
-        if not text_value or not terms:
-            return 0.0
-
-        score = 0.0
-        for term in terms:
-            if not term:
-                continue
-
-            occurrences = len(re.findall(rf"\b{re.escape(term)}\b", text_value))
-            if occurrences > 0:
-                score += min(occurrences, 4) * 0.35
-
-        return score
-
-    def _title_match_bonus(self, title: str, terms: list[str]) -> float:
-        if not title or not terms:
-            return 0.0
-
-        bonus = 0.0
-        for term in terms:
-            if re.search(rf"\b{re.escape(term)}\b", title):
-                bonus += 0.30
-        return min(bonus, 1.5)
-
-    def _overlap_count(self, text_value: str, terms: list[str]) -> int:
-        if not text_value or not terms:
+    # ------------------------------------------------------------------
+    # Scoring helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _safe_count(text_value: str, needle: str) -> int:
+        if not text_value or not needle:
             return 0
+        return text_value.lower().count(needle.lower())
 
+    def _article_source_name(self, article: Article) -> str:
+        return (
+            getattr(article, "source_name", None)
+            or getattr(article, "source", None)
+            or "Unknown"
+        )
+
+    def _count_incident_term_overlap(
+        self,
+        title: str,
+        summary: str,
+        content: str,
+        incident_terms: List[str],
+    ) -> int:
+        combined = f"{title}\n{summary}\n{content}".lower()
         count = 0
-        seen = set()
-
-        for term in terms:
-            if term in seen:
-                continue
-            seen.add(term)
-            if re.search(rf"\b{re.escape(term)}\b", text_value):
+        for term in incident_terms:
+            if term and term.lower() in combined:
                 count += 1
-
         return count
 
-    def _looks_generic_roundup(self, title: str) -> bool:
-        roundup_markers = [
-            "weekly recap",
-            "bulletin",
-            "top 10",
-            "survey:",
-            "and more",
+    def _is_relevant_match(
+        self,
+        score: float,
+        breakdown: Dict[str, float],
+        query_entities: List[str],
+        topic_entities: List[str],
+        original_question: str,
+        resolved_question: str,
+    ) -> bool:
+        if score < self.MIN_FINAL_SCORE:
+            return False
+
+        primary_match = (
+            breakdown.get("km", 0.0)
+            + breakdown.get("em", 0.0)
+            + breakdown.get("title", 0.0)
+        )
+        topic_match = breakdown.get("tk", 0.0) + breakdown.get("te", 0.0)
+
+        generic_question = self._is_generic_question(original_question)
+        has_topic = original_question.strip().lower() != resolved_question.strip().lower()
+
+        incident_entities = [
+            e for e in (query_entities + topic_entities)
+            if e in self.INCIDENT_TERMS
         ]
-        return any(marker in title for marker in roundup_markers)
+        incident_entities = list(dict.fromkeys(incident_entities))
+        incident_overlap_count = breakdown.get("incident_overlap_count", 0)
 
-    def _tokenize(self, text_value: str) -> list[str]:
-        return re.findall(r"[a-z0-9]+", (text_value or "").lower())
+        # ------------------------------------------------------------------
+        # Follow-up / memory mode:
+        # very strict because we already know the incident context
+        # ------------------------------------------------------------------
+        if has_topic and incident_entities:
+            if incident_overlap_count < 2:
+                return False
 
-    def _dedupe_preserve_order(self, items: list[str]) -> list[str]:
-        seen = set()
-        output = []
+            if score < self.FOLLOWUP_MIN_SCORE:
+                return False
 
-        for item in items:
-            item = (item or "").strip().lower()
-            if not item or item in seen:
+            if primary_match < self.FOLLOWUP_MIN_PRIMARY and topic_match < self.FOLLOWUP_MIN_TOPIC:
+                return False
+
+            return True
+
+        # ------------------------------------------------------------------
+        # First-turn generic incident question:
+        # e.g. "What happened in the Klue OAuth breach?"
+        # keep only strong incident-linked matches
+        # ------------------------------------------------------------------
+        if generic_question and incident_entities:
+            if incident_overlap_count < 2:
+                return False
+
+            if score < self.FIRST_TURN_INCIDENT_MIN_SCORE:
+                return False
+
+            return primary_match >= 4.0 or topic_match >= 4.0
+
+        # ------------------------------------------------------------------
+        # Generic first-turn question with no usable incident context
+        # ------------------------------------------------------------------
+        if generic_question and not has_topic and not incident_entities:
+            return primary_match >= 4.0 and score >= 6.0
+
+        # ------------------------------------------------------------------
+        # Normal fallback behavior for non-incident queries
+        # ------------------------------------------------------------------
+        return (
+            primary_match >= self.MIN_PRIMARY_MATCH
+            or topic_match >= self.MIN_TOPIC_ONLY_MATCH
+        )
+
+    def _score_article(
+        self,
+        article: Article,
+        query_keywords: List[str],
+        query_entities: List[str],
+        topic_keywords: List[str],
+        topic_entities: List[str],
+        original_question: str,
+        resolved_question: str,
+    ) -> Tuple[float, Dict[str, float]]:
+        title = article.title or ""
+        summary = article.summary or ""
+        content = article.content or ""
+        title_lower = title.lower()
+        combined = f"{title}\n{summary}\n{content}".lower()
+
+        keyword_match = 0.0
+        entity_match = 0.0
+        topic_keyword_match = 0.0
+        topic_entity_match = 0.0
+        title_bonus = 0.0
+        incident_bonus = 0.0
+
+        # --------------------------------------------------------------
+        # Query keywords: skip generic question-intent terms
+        # --------------------------------------------------------------
+        for kw in query_keywords:
+            if kw in self.GENERIC_MATCH_TERMS:
                 continue
-            seen.add(item)
-            output.append(item)
 
-        return output
+            cnt = self._safe_count(combined, kw)
+            if cnt > 0:
+                keyword_match += min(3.2, 0.8 * cnt)
 
-    def _vector_to_pg(self, vector: list[float]) -> str:
-        return "[" + ",".join(str(float(x)) for x in vector) + "]"
+            if kw in title_lower:
+                title_bonus += 0.45
+
+        # --------------------------------------------------------------
+        # Query entities: skip generic question-intent terms
+        # --------------------------------------------------------------
+        for ent in query_entities:
+            if ent in self.GENERIC_MATCH_TERMS:
+                continue
+
+            cnt = self._safe_count(combined, ent)
+            if cnt > 0:
+                entity_match += min(3.5, 0.9 * cnt)
+
+            if ent in title_lower:
+                title_bonus += 0.55
+
+        # --------------------------------------------------------------
+        # Topic keywords: these are more trusted than raw question words
+        # --------------------------------------------------------------
+        for kw in topic_keywords[:8]:
+            if kw in self.GENERIC_MATCH_TERMS:
+                continue
+
+            cnt = self._safe_count(combined, kw)
+            if cnt > 0:
+                topic_keyword_match += min(2.4, 0.45 * cnt)
+
+        for ent in topic_entities[:8]:
+            if ent in self.GENERIC_MATCH_TERMS:
+                continue
+
+            cnt = self._safe_count(combined, ent)
+            if cnt > 0:
+                topic_entity_match += min(2.6, 0.50 * cnt)
+
+            if ent in title_lower:
+                title_bonus += 0.35
+
+        incident_terms = [
+            e for e in (query_entities + topic_entities)
+            if e in self.INCIDENT_TERMS
+        ]
+        incident_terms = list(dict.fromkeys(incident_terms))
+
+        incident_overlap = self._count_incident_term_overlap(
+            title=title,
+            summary=summary,
+            content=content,
+            incident_terms=incident_terms,
+        )
+
+        if incident_overlap > 0:
+            incident_bonus += min(3.0, incident_overlap * 0.9)
+
+        vector_score = (
+            keyword_match * 0.25
+            + entity_match * 0.30
+            + topic_keyword_match * 0.20
+            + topic_entity_match * 0.25
+        )
+
+        penalty = 0.0
+
+        if (keyword_match + entity_match + topic_keyword_match + topic_entity_match) == 0:
+            penalty += 1.5
+
+        generic_question = self._is_generic_question(original_question)
+        has_topic = original_question.strip().lower() != resolved_question.strip().lower()
+
+        # For generic unresolved questions, penalize articles that don't carry incident overlap.
+        if generic_question and not has_topic and incident_overlap == 0:
+            penalty += 3.0
+
+        # For follow-up/topic-enriched questions, anything with zero incident overlap
+        # should be strongly penalized so it doesn't survive the filter.
+        if has_topic and incident_terms and incident_overlap == 0:
+            penalty += 4.0
+
+        final_score = (
+            vector_score
+            + keyword_match
+            + entity_match
+            + topic_keyword_match
+            + topic_entity_match
+            + title_bonus
+            + incident_bonus
+            - penalty
+        )
+
+        return final_score, {
+            "vs": round(vector_score, 2),
+            "km": round(keyword_match, 2),
+            "em": round(entity_match, 2),
+            "tk": round(topic_keyword_match, 2),
+            "te": round(topic_entity_match, 2),
+            "title": round(title_bonus, 2),
+            "incident": round(incident_bonus, 2),
+            "incident_overlap_count": incident_overlap,
+            "pen": round(penalty, 2),
+        }
+
+    # ------------------------------------------------------------------
+    # Public search
+    # ------------------------------------------------------------------
+    def search(
+        self,
+        original_question: str,
+        resolved_question: Optional[str] = None,
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        limit: int = 3,
+    ) -> Dict[str, Any]:
+        resolved_question = resolved_question or original_question
+        chat_history = chat_history or []
+
+        topic_context = self._build_topic_context(
+            original_question=original_question,
+            resolved_question=resolved_question,
+            chat_history=chat_history,
+        )
+
+        rewritten_query = self._build_rewritten_query(
+            original_question=original_question,
+            resolved_question=resolved_question,
+            topic_context=topic_context,
+        )
+
+        query_keywords = self._extract_keywords(rewritten_query)
+        query_entities = self._extract_entities(rewritten_query)
+        topic_keywords = topic_context.get("keywords", [])
+        topic_entities = topic_context.get("entities", [])
+
+        articles = (
+            self.db.query(Article)
+            .filter(Article.content.isnot(None))
+            .filter(Article.content != "")
+            .order_by(Article.published_at.desc())
+            .limit(150)
+            .all()
+        )
+
+        scored: List[Tuple[Article, float, Dict[str, float]]] = []
+        for article in articles:
+            score, breakdown = self._score_article(
+                article=article,
+                query_keywords=query_keywords,
+                query_entities=query_entities,
+                topic_keywords=topic_keywords,
+                topic_entities=topic_entities,
+                original_question=original_question,
+                resolved_question=resolved_question,
+            )
+            scored.append((article, score, breakdown))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        filtered_scored = [
+            item for item in scored
+            if self._is_relevant_match(
+                score=item[1],
+                breakdown=item[2],
+                query_entities=query_entities,
+                topic_entities=topic_entities,
+                original_question=original_question,
+                resolved_question=resolved_question,
+            )
+        ]
+
+        print("\n" + "=" * 90)
+        print("RETRIEVER RESULTS")
+        print("=" * 90)
+        print(f"Original Question : {original_question}")
+        print(f"Resolved Question : {resolved_question}")
+        print(f"Rewritten Query   : {rewritten_query}")
+        print(f"Keywords          : {query_keywords}")
+        print(f"Entities          : {query_entities}")
+        print(f"Topic keywords    : {topic_keywords}")
+        print(f"Topic entities    : {topic_entities}")
+        print(f"Follow-up mode    : {original_question.strip().lower() != resolved_question.strip().lower()}")
+        print(f"Candidates scored : {len(scored)}")
+        print(f"Relevant matches  : {len(filtered_scored)}")
+
+        for article, score, bd in filtered_scored[: self.DEBUG_RESULT_LIMIT]:
+            source_name = self._article_source_name(article)
+            article_title = getattr(article, "title", "") or "Untitled"
+
+            print(
+                f"{score:0.3f} | {source_name} | {article_title} | "
+                f"vs={bd['vs']:.2f} km={bd['km']:.2f} em={bd['em']:.2f} "
+                f"tk={bd['tk']:.2f} te={bd['te']:.2f} title={bd['title']:.2f} "
+                f"incident={bd['incident']:.2f} overlap={bd['incident_overlap_count']} "
+                f"pen={bd['pen']:.2f}"
+            )
+
+        if not filtered_scored:
+            print("No candidates passed the relevance filter.")
+
+        final_articles = [item[0] for item in filtered_scored[:limit]]
+
+        print(f"\nReturning {len(final_articles)} final results\n")
+
+        return {
+            "rewritten_query": rewritten_query,
+            "topic_context": topic_context,
+            "articles": final_articles,
+        }

@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 from app.graph.state import GraphState
 from app.services.retriever import Retriever
 from app.services.llm_service import LLMService
+from app.services.answer_cleanup import clean_generated_answer
 
 
 MAX_SUMMARY_CHARS = 1200
@@ -25,15 +26,27 @@ def _clip_text(value: str, limit: int) -> str:
     return value[:limit].rstrip() + "..."
 
 
-def _normalize_article(article: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_article(article: Any) -> Dict[str, Any]:
+    # Supports both SQLAlchemy Article objects and dict-like items
+    if isinstance(article, dict):
+        return {
+            "id": article.get("id"),
+            "title": article.get("title") or "Untitled",
+            "source": article.get("source") or "Unknown",
+            "url": article.get("url") or "",
+            "published_at": article.get("published_at"),
+            "summary": article.get("summary") or "",
+            "content": article.get("content") or "",
+        }
+
     return {
-        "id": article.get("id"),
-        "title": article.get("title") or "Untitled",
-        "source": article.get("source") or "Unknown",
-        "url": article.get("url") or "",
-        "published_at": article.get("published_at"),
-        "summary": article.get("summary") or "",
-        "content": article.get("content") or "",
+        "id": getattr(article, "id", None),
+        "title": getattr(article, "title", None) or "Untitled",
+        "source": getattr(article, "source_name", None) or getattr(article, "source", None) or "Unknown",
+        "url": getattr(article, "url", None) or "",
+        "published_at": getattr(article, "published_at", None),
+        "summary": getattr(article, "summary", None) or "",
+        "content": getattr(article, "content", None) or "",
     }
 
 
@@ -42,7 +55,7 @@ def retrieve_articles_node(state: GraphState) -> GraphState:
 
     original_question = _safe_str(state.get("question"))
     resolved_question = _safe_str(state.get("resolved_question")) or original_question
-    chat_history = _safe_str(state.get("chat_history"))
+    chat_history = state.get("chat_history") or []
 
     print("\n[Node] Original Question:")
     print(original_question)
@@ -53,15 +66,14 @@ def retrieve_articles_node(state: GraphState) -> GraphState:
     retriever = Retriever()
 
     retrieval_result = retriever.search(
-        query=resolved_question,
-        chat_history=chat_history,
         original_question=original_question,
         resolved_question=resolved_question,
+        chat_history=chat_history,
     )
 
     rewritten_query = retrieval_result.get("rewritten_query") or resolved_question
     topic_context = retrieval_result.get("topic_context") or {}
-    articles = retrieval_result.get("results") or []
+    articles = retrieval_result.get("articles") or []
 
     normalized_articles = [_normalize_article(article) for article in articles]
 
@@ -203,12 +215,20 @@ Return a clear structured answer with:
 2. Key Findings
 3. Impact
 4. Recommendations
+
+Formatting rules:
+- Include each section exactly once.
+- Do not include a Sources section.
+- Do not repeat the same facts across sections unless needed for clarity.
+- Keep the answer concise and specific to the resolved question.
 """.strip()
 
     answer = llm.generate(prompt)
 
     if not answer:
         answer = "I could not generate an answer for this question."
+    else:
+        answer = clean_generated_answer(answer)
 
     return {
         **state,

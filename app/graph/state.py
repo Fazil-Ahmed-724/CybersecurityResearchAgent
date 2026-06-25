@@ -7,7 +7,12 @@ class GraphState(TypedDict, total=False):
     rewritten_query: str
     chat_id: int
     user_id: int
-    chat_history: str
+
+    # Structured chat history for retriever / follow-up topic context
+    chat_history: List[Dict[str, Any]]
+
+    # Optional plain text history for prompt/debugging if needed
+    chat_history_text: str
 
     retrieved_articles: List[Dict[str, Any]]
     context: str

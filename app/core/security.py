@@ -1,31 +1,30 @@
 from datetime import datetime, timedelta, UTC
 
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
 
 # Change these in production
 SECRET_KEY = "cybersecurity-research-agent-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
-
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    password_bytes = (password or "").encode("utf-8")
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(
     plain_password: str,
     hashed_password: str
 ) -> bool:
-    return pwd_context.verify(
-        plain_password,
-        hashed_password
-    )
+    try:
+        return bcrypt.checkpw(
+            (plain_password or "").encode("utf-8"),
+            (hashed_password or "").encode("utf-8")
+        )
+    except ValueError:
+        return False
 
 
 def create_access_token(

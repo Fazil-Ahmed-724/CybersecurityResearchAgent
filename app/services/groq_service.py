@@ -1,31 +1,11 @@
-import re
-
 from groq import Groq
 from groq import APIStatusError
 
 from app.config.settings import settings
+from app.services.answer_cleanup import clean_generated_answer
 
 
 class GroqService:
-    SECTION_ORDER = {
-        "executive summary": 1,
-        "key findings": 2,
-        "impact": 3,
-        "recommendations": 4
-    }
-
-    SECTION_PATTERN = re.compile(
-        r"^\s*(?:\*\*)?\s*(?:\d+\.\s*)?"
-        r"(executive summary|key findings|impact|recommendations)"
-        r"\s*:?\s*(?:\*\*)?\s*(.*)$",
-        re.IGNORECASE
-    )
-
-    SOURCES_PATTERN = re.compile(
-        r"^\s*(?:#+\s*)?(?:\*\*)?sources(?:\*\*)?\s*:?\s*$",
-        re.IGNORECASE
-    )
-
     MAX_HISTORY_CHARS = 2500
     MAX_CONTEXT_CHARS = 12000
     MAX_PROMPT_CHARS = 17000
@@ -279,52 +259,4 @@ Question:
         self,
         answer: str
     ):
-        lines = answer.strip().splitlines()
-        cleaned_lines = []
-        seen_sections = set()
-        seen_content = set()
-        skip_duplicate_section = False
-
-        for line in lines:
-            if self.SOURCES_PATTERN.match(line):
-                break
-
-            section_match = self.SECTION_PATTERN.match(line)
-
-            if section_match:
-                section_name = section_match.group(1).lower()
-                section_body = section_match.group(2).strip()
-
-                if section_name in seen_sections:
-                    skip_duplicate_section = True
-                    continue
-
-                seen_sections.add(section_name)
-                skip_duplicate_section = False
-
-                section_number = self.SECTION_ORDER[section_name]
-                section_title = section_name.title()
-
-                if cleaned_lines and cleaned_lines[-1] != "":
-                    cleaned_lines.append("")
-
-                cleaned_lines.append(f"**{section_number}. {section_title}:**")
-                cleaned_lines.append("")
-
-                if section_body:
-                    cleaned_lines.append(section_body)
-
-                continue
-
-            if skip_duplicate_section:
-                continue
-
-            normalized_line = line.strip().lower()
-            if normalized_line:
-                if normalized_line in seen_content:
-                    continue
-                seen_content.add(normalized_line)
-
-            cleaned_lines.append(line)
-
-        return "\n".join(cleaned_lines).strip()
+        return clean_generated_answer(answer)

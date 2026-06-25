@@ -1,5 +1,5 @@
 import re
-from typing import Any, Optional
+from typing import Optional
 
 from app.repositories.chat_repository import ChatRepository
 
@@ -92,6 +92,9 @@ class ChatService:
         "affected",
         "companies",
         "happened",
+        "behind",
+        "stolen",
+        "happen",
     }
 
     TOPIC_CANDIDATE_WORDS = {
@@ -100,9 +103,15 @@ class ChatService:
         "salesforce",
         "icarus",
         "lastpass",
-        "narwhalrat",
-        "lazarus",
-        "bluenoroff",
+        "huntress",
+        "recorded",
+        "future",
+        "tanium",
+        "jamf",
+        "gong",
+        "insurity",
+        "sprout",
+        "social",
         "fortinet",
         "fortisandbox",
         "fortibleed",
@@ -113,10 +122,32 @@ class ChatService:
         "npm",
         "malware",
         "ransomware",
-        "breach",
-        "incident",
-        "campaign",
+        "lazarus",
+        "bluenoroff",
     }
+
+    FOLLOWUP_PRONOUNS = {
+        "it", "they", "them", "that", "this", "those", "these",
+        "he", "she", "his", "her", "its", "their", "there"
+    }
+
+    BAD_CONTEXT_TERMS = {
+        "executive", "summary", "key", "findings", "impact", "recommendations",
+        "stolen", "attackers", "companies", "data", "incident", "breach",
+        "happened", "linked", "affected"
+    }
+
+    GENERIC_QUESTION_PATTERNS = [
+        r"^what happened\??$",
+        r"^what data was stolen\??$",
+        r"^what was stolen\??$",
+        r"^which companies were affected\??$",
+        r"^who was affected\??$",
+        r"^who was impacted\??$",
+        r"^which attackers were linked to it\??$",
+        r"^who was behind it\??$",
+        r"^who were they\??$",
+    ]
 
     def __init__(self, repository: ChatRepository):
         self.repository = repository
@@ -141,11 +172,17 @@ class ChatService:
     # Messages
     # ----------------------------------
 
-    def save_user_message(self, chat_id: int, content: str):
+    def save_user_message(
+        self,
+        chat_id: int,
+        content: str,
+        metadata_json: dict | None = None
+    ):
         return self.repository.save_message(
             chat_id=chat_id,
             role="user",
-            content=content
+            content=content,
+            metadata_json=metadata_json
         )
 
     def save_assistant_message(
@@ -168,7 +205,7 @@ class ChatService:
     # History
     # ----------------------------------
 
-    def build_chat_history_text(self, chat_id: int, limit: int = 8) -> str:
+    def build_chat_history_text(self, chat_id: int, limit: int = 12) -> str:
         messages = self.get_chat_messages(chat_id) or []
         if not messages:
             return ""
@@ -184,7 +221,6 @@ class ChatService:
             if not content:
                 continue
 
-            content = self._truncate_text(content, 700)
             lines.append(f"{speaker}: {content}")
 
         return "\n".join(lines)
@@ -196,205 +232,251 @@ class ChatService:
         return messages[-limit:]
 
     # ----------------------------------
-    # Follow-up detection / resolution
-    # ----------------------------------
-
-    def is_followup_question(self, question: str) -> bool:
-        question = (question or "").strip().lower()
-        if not question:
-            return False
-
-        tokens = re.findall(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", question)
-
-        if len(tokens) <= 7:
-            return True
-
-        if any(token in self.FOLLOWUP_HINT_WORDS for token in tokens):
-            return True
-
-        followup_patterns = [
-            r"\bwhat about\b",
-            r"\bhow about\b",
-            r"\bwho were they\b",
-            r"\bwho was behind it\b",
-            r"\bwhich attackers\b",
-            r"\bwhat data\b",
-            r"\bwho was impacted\b",
-            r"\bwhat happened next\b",
-            r"\bhow did it happen\b",
-            r"\bwhich companies\b",
-        ]
-
-        return any(re.search(pattern, question) for pattern in followup_patterns)
-
-    def build_resolved_question(
-        self,
-        chat_id: int,
-        current_question: str,
-        chat_title: Optional[str] = None
-    ) -> str:
-        current_question = (current_question or "").strip()
-        if not current_question:
-            return ""
-
-        # already standalone topic question
-        lower_q = current_question.lower()
-        strong_topic_words = [
-            "klue", "oauth", "lastpass", "salesforce",
-            "narwhalrat", "fortibleed", "icarus", "xolis"
-        ]
-        if any(word in lower_q for word in strong_topic_words):
-            return current_question
-
-        if not self.is_followup_question(current_question):
-            return current_question
-
-        messages = self.get_recent_messages(chat_id=chat_id, limit=12)
-
-        # exclude current just-saved user message
-        previous_messages = messages[:-1] if messages else []
-
-        last_user_question = self._get_last_user_question(previous_messages)
-        last_assistant_answer = self._get_last_assistant_answer(previous_messages)
-
-        topic_phrase = self._extract_topic_from_text(last_user_question)
-
-        if not topic_phrase and chat_title:
-            topic_phrase = self._extract_topic_from_text(chat_title)
-
-        if not topic_phrase and last_assistant_answer:
-            answer_keywords = self._extract_keywords(last_assistant_answer, limit=4)
-            if answer_keywords:
-                topic_phrase = " ".join(answer_keywords)
-
-        if not topic_phrase:
-            return current_question
-
-        return self._make_followup_standalone(
-            current_question=current_question,
-            topic_phrase=topic_phrase
-        )
-
-    # ----------------------------------
     # Helpers
     # ----------------------------------
 
-    def _truncate_text(self, value: str, max_chars: int) -> str:
-        value = (value or "").strip()
-        if len(value) <= max_chars:
-            return value
-        return value[:max_chars].rstrip() + "..."
+    def _tokenize(self, value: str) -> list[str]:
+        return re.findall(r"[a-zA-Z0-9][a-zA-Z0-9._-]*", (value or "").lower())
 
-    def _extract_keywords(self, text_value: str, limit: int = 8) -> list[str]:
-        tokens = re.findall(
-            r"[a-zA-Z0-9][a-zA-Z0-9._-]*",
-            (text_value or "").lower()
-        )
+    def _normalize_question(self, value: str) -> str:
+        value = (value or "").strip().lower()
+        value = re.sub(r"\s+", " ", value)
+        return value
 
+    def _has_pronoun_followup_signal(self, question: str) -> bool:
+        tokens = self._tokenize(question)
+        return any(token in self.FOLLOWUP_PRONOUNS for token in tokens)
+
+    def _is_generic_question(self, question: str) -> bool:
+        q = self._normalize_question(question)
+        return any(re.match(pattern, q) for pattern in self.GENERIC_QUESTION_PATTERNS)
+
+    def _extract_topic_keywords(self, text_value: str) -> list[str]:
+        tokens = self._tokenize(text_value)
         keywords = []
-        seen = set()
 
         for token in tokens:
             if len(token) < 3:
                 continue
             if token in self.ENTITY_STOPWORDS:
                 continue
-            if token in seen:
+            if token in self.BAD_CONTEXT_TERMS:
                 continue
-
-            seen.add(token)
             keywords.append(token)
 
-            if len(keywords) >= limit:
-                break
-
-        return keywords
-
-    def _get_last_user_question(self, messages: list[Any]) -> str:
-        for message in reversed(messages):
-            if (message.role or "").lower() == "user":
-                content = (message.content or "").strip()
-                if content:
-                    return content
-        return ""
-
-    def _get_last_assistant_answer(self, messages: list[Any]) -> str:
-        for message in reversed(messages):
-            if (message.role or "").lower() == "assistant":
-                content = (message.content or "").strip()
-                if content:
-                    return content
-        return ""
-
-    def _extract_topic_from_text(self, text_value: str) -> str:
-        text_value = (text_value or "").strip()
-        if not text_value:
-            return ""
-
-        original_tokens = re.findall(r"[A-Za-z0-9\-\']+", text_value)
-        if not original_tokens:
-            return ""
-
-        keep = []
-        for token in original_tokens:
-            clean = token.lower()
-
-            if len(clean) <= 2:
-                continue
-            if clean in self.ENTITY_STOPWORDS:
-                continue
-
-            if (
-                token[0].isupper()
-                or clean in self.TOPIC_CANDIDATE_WORDS
-                or any(ch.isdigit() for ch in token)
-                or "-" in token
-            ):
-                keep.append(token)
-
-        if not keep:
-            keywords = self._extract_keywords(text_value, limit=4)
-            return " ".join(keywords).strip()
-
-        dedup = []
         seen = set()
-        for token in keep:
-            low = token.lower()
-            if low in seen:
+        result = []
+        for item in keywords:
+            if item not in seen:
+                seen.add(item)
+                result.append(item)
+
+        return result[:10]
+
+    def _extract_context_topic_from_text(self, text_value: str) -> Optional[str]:
+        if not text_value:
+            return None
+
+        tokens = self._tokenize(text_value)
+
+        preferred = []
+        fallback = []
+
+        for token in tokens:
+            if len(token) < 3:
                 continue
-            seen.add(low)
-            dedup.append(token)
+            if token in self.ENTITY_STOPWORDS:
+                continue
+            if token in self.BAD_CONTEXT_TERMS:
+                continue
 
-        topic = " ".join(dedup[:5]).strip()
-        topic = re.sub(r"\s+", " ", topic).strip()
-        return topic
+            if token in self.TOPIC_CANDIDATE_WORDS:
+                preferred.append(token)
+            else:
+                fallback.append(token)
 
-    def _make_followup_standalone(
+        seen = set()
+        ordered = []
+        for token in preferred + fallback:
+            if token not in seen:
+                seen.add(token)
+                ordered.append(token)
+
+        if not ordered:
+            return None
+
+        return " ".join(ordered[:4])
+
+    def _extract_last_assistant_resolved_question(self, messages) -> Optional[str]:
+        for message in reversed(messages):
+            role = (message.role or "").strip().lower()
+            if role != "assistant":
+                continue
+
+            metadata = getattr(message, "metadata_json", None) or {}
+            resolved = (metadata.get("resolved_question") or "").strip()
+            if resolved:
+                return resolved
+
+        return None
+
+    def _extract_last_user_resolved_question(self, messages) -> Optional[str]:
+        for message in reversed(messages):
+            role = (message.role or "").strip().lower()
+            if role != "user":
+                continue
+
+            metadata = getattr(message, "metadata_json", None) or {}
+            resolved = (metadata.get("resolved_question") or "").strip()
+            if resolved:
+                return resolved
+
+        return None
+
+    def _extract_best_context_topic(self, messages, chat_title: str | None = None) -> Optional[str]:
+        assistant_resolved = self._extract_last_assistant_resolved_question(messages)
+        if assistant_resolved:
+            topic = self._extract_context_topic_from_text(assistant_resolved)
+            if topic:
+                return topic
+
+        for message in reversed(messages):
+            role = (message.role or "").strip().lower()
+            if role != "assistant":
+                continue
+
+            topic = self._extract_context_topic_from_text(message.content or "")
+            if topic:
+                return topic
+
+        user_resolved = self._extract_last_user_resolved_question(messages)
+        if user_resolved:
+            topic = self._extract_context_topic_from_text(user_resolved)
+            if topic:
+                return topic
+
+        if chat_title:
+            topic = self._extract_context_topic_from_text(chat_title)
+            if topic:
+                return topic
+
+        return None
+
+    def _contains_explicit_topic(self, question: str) -> bool:
+        tokens = set(self._tokenize(question))
+        return any(token in self.TOPIC_CANDIDATE_WORDS for token in tokens)
+
+    def _compose_incident_question(self, question: str, topic: str, suffix: str) -> str:
+        question = (question or "").strip()
+        question = question.rstrip(" ?")
+
+        if re.search(r"\b(in|about)\b", question.lower()):
+            return f"{question}?"
+
+        return f"{question} {suffix.format(topic=topic)}?"
+
+    # ----------------------------------
+    # Follow-up detection
+    # ----------------------------------
+
+    def is_followup_question(self, question: str, chat_id: int | None = None) -> bool:
+        question = (question or "").strip()
+        if not question:
+            return False
+
+        # if question already contains explicit incident/topic words,
+        # treat it as standalone unless it also has a pronoun signal
+        if self._contains_explicit_topic(question):
+            return self._has_pronoun_followup_signal(question)
+
+        # clear pronoun / reference signal => follow-up
+        if self._has_pronoun_followup_signal(question):
+            return True
+
+        lower_question = question.lower()
+
+        followup_patterns = [
+            r"\bwhat about\b",
+            r"\bhow about\b",
+            r"\bwho were they\b",
+            r"\bwho was behind it\b",
+            r"\bwhich attackers were linked to it\b",
+            r"\bwhat data was stolen\b",
+            r"\bwho was impacted\b",
+            r"\bwhat happened next\b",
+            r"\bhow did it happen\b",
+            r"\bwhich companies were affected\b",
+            r"\bwhat was stolen\b",
+        ]
+
+        if any(re.search(pattern, lower_question) for pattern in followup_patterns):
+            # only treat as follow-up if there is actually history/context
+            if chat_id:
+                messages = self.get_recent_messages(chat_id, limit=12)
+                return len(messages) > 0
+            return True
+
+        return False
+
+    # ----------------------------------
+    # Resolved question builder
+    # ----------------------------------
+
+    def build_resolved_question(
         self,
+        chat_id: int,
         current_question: str,
-        topic_phrase: str
+        chat_title: str | None = None
     ) -> str:
         current_question = (current_question or "").strip()
-        topic_phrase = (topic_phrase or "").strip()
+        if not current_question:
+            return ""
 
-        if not current_question or not topic_phrase:
+        messages = self.get_recent_messages(chat_id, limit=12)
+
+        # no history => standalone
+        if not messages:
             return current_question
 
-        q_lower = current_question.lower().strip(" ?")
+        if not self.is_followup_question(current_question, chat_id=chat_id):
+            return current_question
 
-        if "which attackers" in q_lower or "who was behind" in q_lower:
-            return f"Which attackers were linked to {topic_phrase}?"
+        topic = self._extract_best_context_topic(messages, chat_title=chat_title)
+        if not topic:
+            return current_question
 
-        if ("what data" in q_lower and "stolen" in q_lower) or q_lower.startswith("what data"):
-            return f"What data was stolen in {topic_phrase}?"
+        question_lower = current_question.lower()
 
-        if "which companies" in q_lower or "who was affected" in q_lower:
-            return f"Which companies were affected by {topic_phrase}?"
+        if any(p in question_lower for p in ["what happened", "summarize", "summary", "overview"]):
+            return self._compose_incident_question(
+                current_question,
+                topic,
+                "in the {topic} incident"
+            )
 
-        if "what happened" in q_lower:
-            return f"What happened in {topic_phrase}?"
+        if any(p in question_lower for p in ["who", "which attackers", "who was behind"]):
+            return self._compose_incident_question(
+                current_question,
+                topic,
+                "in the {topic} incident"
+            )
 
-        if "impact" in q_lower or "affected" in q_lower:
-            return f"What was the impact of {topic_phrase}?"
+        if any(p in question_lower for p in ["what data", "what was stolen"]):
+            return self._compose_incident_question(
+                current_question,
+                topic,
+                "in the {topic} breach"
+            )
 
-        return f"{current_question.rstrip('?')} in {topic_phrase}?"
+        if any(p in question_lower for p in ["which companies", "who was affected", "who was impacted"]):
+            return self._compose_incident_question(
+                current_question,
+                topic,
+                "in the {topic} incident"
+            )
+
+        return self._compose_incident_question(
+            current_question,
+            topic,
+            "about {topic}"
+        )

@@ -544,20 +544,50 @@ class Retriever:
         # If user asks about Huntress/LastPass/Salesforce, heavily prefer
         # articles that explicitly mention that entity.
         # ------------------------------------------------------------
-        if is_entity_followup and followup_targets:
-            matched_target = False
+            if is_entity_followup and followup_targets:
+                matched_target = False
 
-            for ent in followup_targets:
-                if ent in combined:
+                summary_lower = summary.lower() if summary else ""
+                content_lower = content.lower() if content else ""
+
+                for ent in followup_targets:
+                    ent = ent.lower()
+
+                    title_hit = ent in title_lower
+                    summary_hit = ent in summary_lower
+                    content_count = content_lower.count(ent)
+
+                    # No mention at all => skip for now, penalize later if nothing matched
+                    if not title_hit and not summary_hit and content_count == 0:
+                        continue
+
                     matched_target = True
-                    target_entity_bonus += 6.0
-                    if ent in title_lower:
-                        target_entity_bonus += 4.0
 
-            # If the article does NOT mention the asked target entity,
-            # penalize it so generic incident articles drop below target article.
-            if not matched_target:
-                target_entity_bonus -= 5.0
+                    # Base match
+                    target_entity_bonus += 3.0
+
+                    # Strong signals that this article is actually about that entity
+                    if title_hit:
+                        target_entity_bonus += 12.0
+
+                    if summary_hit:
+                        target_entity_bonus += 6.0
+
+                    if content_count >= 3:
+                        target_entity_bonus += 6.0
+                    elif content_count == 2:
+                        target_entity_bonus += 3.5
+                    elif content_count == 1:
+                        target_entity_bonus += 1.0
+
+                    # If entity is only weakly mentioned in content but not in title/summary,
+                    # treat it as a generic incident article rather than an entity-focused one.
+                    if not title_hit and not summary_hit and content_count <= 1:
+                        target_entity_bonus -= 6.0
+
+                # If target entity is absent completely, strongly penalize generic incident articles
+                if not matched_target:
+                    target_entity_bonus -= 8.0
 
         meaningful_entities = [
             e for e in query_entities

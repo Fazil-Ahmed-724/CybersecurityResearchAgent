@@ -94,7 +94,12 @@ def chat(
         chat_title=chat_obj.title if chat_obj else None
     )
 
-    # Save current user message with resolved metadata
+    # Build history BEFORE saving current message
+    chat_history_text = chat_service.build_chat_history_text(chat_id=chat_id)
+    recent_messages = chat_service.get_recent_messages(chat_id=chat_id, limit=12)
+    chat_history_structured = build_structured_chat_history(recent_messages)
+
+    # Now save current user message
     chat_service.save_user_message(
         chat_id=chat_id,
         content=payload.question,
@@ -102,13 +107,6 @@ def chat(
             "resolved_question": resolved_question
         }
     )
-
-    # Phase 21.5: build BOTH
-    # 1) text history for LLM prompt / debugging if needed
-    # 2) structured history for retriever follow-up/topic context
-    chat_history_text = chat_service.build_chat_history_text(chat_id=chat_id)
-    recent_messages = chat_service.get_recent_messages(chat_id=chat_id, limit=12)
-    chat_history_structured = build_structured_chat_history(recent_messages)
 
     print("\n" + "=" * 80)
     print("CHAT REQUEST")

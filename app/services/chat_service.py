@@ -158,15 +158,15 @@ class ChatService:
     }
 
     GENERIC_QUESTION_PATTERNS = [
-        r"^what happened\??$",
-        r"^what data was stolen\??$",
-        r"^what was stolen\??$",
-        r"^which companies were affected\??$",
-        r"^who was affected\??$",
-        r"^who was impacted\??$",
-        r"^which attackers were linked to it\??$",
-        r"^who was behind it\??$",
-        r"^who were they\??$",
+        r"^what happened(?: in .+)?\??$",
+        r"^what data was stolen(?: in .+)?\??$",
+        r"^what was stolen(?: in .+)?\??$",
+        r"^which companies were affected(?: in .+)?\??$",
+        r"^who was affected(?: in .+)?\??$",
+        r"^who was impacted(?: in .+)?\??$",
+        r"^which attackers were linked to it(?: in .+)?\??$",
+        r"^who was behind it(?: in .+)?\??$",
+        r"^who were they(?: in .+)?\??$",
     ]
 
     def __init__(self, repository: ChatRepository):

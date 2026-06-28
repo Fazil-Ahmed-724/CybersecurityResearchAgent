@@ -274,20 +274,32 @@ for msg_index, msg in enumerate(st.session_state.messages):
             sources = unique_sources(msg.get("sources", []))
 
             if sources:
-                st.divider()
-                st.subheader("Sources")
 
-                for source_index, source in enumerate(sources):
-                    st.markdown(f"### {source.get('source', 'Unknown')}")
-                    st.write(source.get("title", "Untitled"))
+                with st.expander(
+                    f"📚 Sources ({len(sources)})",
+                    expanded=False,
+                ):
 
-                    if source.get("url"):
-                        st.link_button(
-                            "🔗 Open Article",
-                            source["url"],
-                            key=f"src_{msg_index}_{source_index}"
-                        )
+                    for source_index, source in enumerate(sources):
 
+                        with st.container(border=True):
+
+                            st.markdown(
+                                f"### 📰 {source.get('source', 'Unknown Source')}"
+                            )
+
+                            st.markdown(
+                                f"**Title:** {source.get('title', 'Untitled')}"
+                            )
+
+                            if source.get("url"):
+
+                                st.link_button(
+                                    "🔗 View Article",
+                                    source["url"],
+                                    key=f"src_{msg_index}_{source_index}",
+                                    use_container_width=True,
+                                )
 # ----------------------------------
 # Ask Question
 # ----------------------------------

@@ -104,13 +104,32 @@ RESPONSE_KEYWORDS = {
 # ============================================================
 @dataclass
 class Evidence:
+    """
+    Represents one ranked evidence sentence extracted
+    from a retrieved article.
+    """
+    evidence_id: int
     article_index: int
     title: str
     source: str
+    url: str
     sentence: str
     score: int
     matched_terms: List[str]
     matched_entities: List[str]
+
+@dataclass
+class Citation:
+
+    evidence_id: int
+
+    source: str
+
+    title: str
+
+    url: str
+
+    sentence: str
 
 @dataclass
 class GroundedAnswerContext:
@@ -466,6 +485,10 @@ def _log_grounding_context(
 
     print("Responses      :", len(context.response_actions))
 
+    if context.all_evidence:
+        print("Top Evidence IDs:",
+            [e.evidence_id for e in context.all_evidence[:5]])
+
     print("Unknowns       :", len(context.unknowns))
 
     print("=" * 80)
@@ -511,11 +534,17 @@ Matched Terms:
 Matched Entities:
 {", ".join(evidence.matched_entities) or "None"}
 
+Evidence ID:
+{evidence.evidence_id}
+
 Source:
 {evidence.source}
 
 Title:
 {evidence.title}
+
+URL:
+{evidence.url}
 
 Evidence:
 {evidence.sentence}
@@ -693,6 +722,10 @@ def build_context_node(state: GraphState) -> GraphState:
         resolved_question=resolved_question,
     )
 
+    citation_registry = _build_citation_registry(
+        ranked_evidence,
+    )
+
     _log_grounding_context(
         grounding_context,
     )
@@ -730,6 +763,7 @@ def build_context_node(state: GraphState) -> GraphState:
         "focused_sources": focused_sources,
         "sources": sources,
         "grounding_context": grounding_context,
+        "citation_registry": citation_registry,
     }
 
 def _split_into_sentences(article: Dict[str, Any]) -> List[str]:
@@ -881,9 +915,11 @@ def _extract_candidate_evidence(
 
         evidence.append(
             Evidence(
+                evidence_id=0,  # Assigned later after ranking
                 article_index=article_index,
                 title=article.get("title", ""),
                 source=article.get("source", ""),
+                url=article.get("url", ""),
                 sentence=sentence,
                 score=score,
                 matched_terms=matched_terms,
@@ -916,6 +952,9 @@ def _rank_evidence(
         key=lambda item: item.score,
         reverse=True,
     )
+
+    for evidence_id, evidence in enumerate(ranked, start=1):
+        evidence.evidence_id = evidence_id
 
     return ranked
 
@@ -963,10 +1002,10 @@ def _build_evidence_pack(
     blocks = []
     total_chars = 0
 
-    for idx, item in enumerate(ranked, start=1):
+    for item in ranked:
 
         block = f"""
-            Evidence #{idx}
+    Evidence #{item.evidence_id}
 
             Relevance Score:
             {item.score}
@@ -982,6 +1021,9 @@ def _build_evidence_pack(
 
             Title:
             {item.title}
+
+            URL:
+            {item.url}
 
             Evidence:
             {item.sentence}
@@ -1009,6 +1051,151 @@ def _build_context_from_articles(
         total_limit=total_limit,
     )
 
+def _build_citation_registry(
+    evidence_list: List[Evidence],
+) -> Dict[int, Citation]:
+    """
+    Build a lookup table:
+        Evidence ID -> Citation
+    """
+
+    registry = {}
+
+    for evidence in evidence_list:
+
+        registry[evidence.evidence_id] = Citation(
+            evidence_id=evidence.evidence_id,
+            source=evidence.source,
+            title=evidence.title,
+            url=evidence.url,
+            sentence=evidence.sentence,
+        )
+
+    return registry
+
+def _replace_evidence_references(
+    answer: str,
+    citation_registry: Dict[int, Citation],
+) -> str:
+    """
+    Replace internal Evidence references with user-friendly citations.
+
+    Example:
+
+        [Evidence #7]
+            ↓
+        [1]
+
+    Then append a Sources section.
+    """
+
+    if not answer:
+        return answer
+
+    if not citation_registry:
+        return answer
+
+    #
+    # Find all Evidence IDs in order of appearance
+    #
+    pattern = re.compile(
+        r"\[Evidence\s*#(\d+)\]",
+        flags=re.IGNORECASE,
+    )
+
+    evidence_to_citation: Dict[int, int] = {}
+    ordered_evidence_ids: List[int] = []
+
+    def replace_match(match: re.Match) -> str:
+
+        evidence_id = int(match.group(1))
+
+        #
+        # Ignore invalid IDs
+        #
+        if evidence_id not in citation_registry:
+            return "[Invalid Citation]"
+
+        #
+        # First occurrence gets next citation number
+        #
+        if evidence_id not in evidence_to_citation:
+
+            evidence_to_citation[evidence_id] = (
+                len(evidence_to_citation) + 1
+            )
+
+            ordered_evidence_ids.append(
+                evidence_id
+            )
+
+        citation_number = evidence_to_citation[
+            evidence_id
+        ]
+
+        return f"[{citation_number}]"
+
+    #
+    # Replace Evidence references
+    #
+    formatted_answer = pattern.sub(
+        replace_match,
+        answer,
+    )
+
+    #
+    # Nothing referenced
+    #
+    if not ordered_evidence_ids:
+        return formatted_answer
+
+    #
+    # Build Sources section
+    #
+    source_lines = []
+
+    source_lines.append("")
+    source_lines.append("-" * 60)
+    source_lines.append("")
+    source_lines.append("## Sources")
+    source_lines.append("")
+
+    for evidence_id in ordered_evidence_ids:
+
+        citation_number = evidence_to_citation[
+            evidence_id
+        ]
+
+        citation = citation_registry[
+            evidence_id
+        ]
+
+        source_lines.append(
+            f"[{citation_number}]"
+        )
+
+        source_lines.append(
+            citation.source
+        )
+
+        source_lines.append(
+            citation.title
+        )
+
+        if citation.url:
+
+            source_lines.append(
+                citation.url
+            )
+
+        source_lines.append("")
+
+    return (
+        formatted_answer.rstrip()
+        + "\n"
+        + "\n".join(source_lines)
+    )
+
 def generate_answer_node(state: GraphState) -> GraphState:
     print("\n[Node] Generating Answer")
 
@@ -1020,7 +1207,7 @@ def generate_answer_node(state: GraphState) -> GraphState:
 
     sources = state.get("sources", []) or []
     focused_sources = state.get("focused_sources", []) or []
-
+    citation_registry = state.get("citation_registry", {})
     grounding_context = state.get("grounding_context")
 
     topic_context = state.get("topic_context") or {}
@@ -1181,7 +1368,21 @@ If the grounded answer context contains no recommendations,
 
 provide only GENERAL CYBERSECURITY BEST PRACTICES and clearly label them as such.
 
-10. Do NOT create a Sources section.
+10. After every factual statement, append the supporting evidence ID.
+
+Use this exact format:
+
+[Evidence #<id>]
+
+Example:
+
+LastPass confirmed it was affected. [Evidence #3]
+
+Only use evidence IDs that appear in the grounded answer context.
+
+Do NOT invent evidence IDs.
+
+Do NOT create a Sources section.
 
 11. Avoid repeating information across sections.
 
@@ -1195,6 +1396,12 @@ OUTPUT FORMAT
 
 Write one concise paragraph answering ONLY the resolved question.
 
+Append an evidence reference after every factual sentence.
+
+Example:
+
+LastPass confirmed it was affected. [Evidence #3]
+
 If the answer is unavailable, explicitly state:
 
 "Not explicitly stated in the retrieved sources."
@@ -1206,6 +1413,12 @@ If the answer is unavailable, explicitly state:
 Provide 3-6 bullet points.
 
 Every bullet MUST come directly from the grounded answer context.
+
+Every factual bullet MUST end with one supporting evidence reference.
+
+Example:
+
+• LastPass confirmed it was affected. [Evidence #3]
 
 If the requested information is absent, include:
 
@@ -1227,7 +1440,13 @@ Not explicitly stated in the retrieved sources.
 
 If the grounded answer context contains recommendations:
 
-Provide 3-5 evidence-based recommendations.
+Provide 3–5 evidence-based recommendations.
+
+Every recommendation derived from the grounded answer context must end with its supporting evidence reference.
+
+Example:
+
+• LastPass revoked affected OAuth tokens. [Evidence #6]
 
 Otherwise write:
 
@@ -1246,6 +1465,10 @@ Before producing the final answer, verify:
 
 ✓ Every factual statement exists in the grounded answer context.
 
+✓ Every factual statement includes at least one valid evidence reference.
+
+✓ Every evidence reference corresponds to an Evidence ID present in the grounded answer context.
+
 ✓ No outside knowledge was used.
 
 ✓ No unsupported conclusions were made.
@@ -1262,7 +1485,25 @@ Before producing the final answer, verify:
     if not answer:
         answer = "I could not generate an answer for this question."
     else:
-        answer = clean_generated_answer(answer)
+
+        answer = clean_generated_answer(
+            answer,
+        )
+
+        #
+        # Convert:
+        # [Evidence #7]
+        #      ↓
+        # [1]
+        #
+        # Append Sources section.
+        #
+        if citation_registry:
+
+            answer = _replace_evidence_references(
+                answer=answer,
+                citation_registry=citation_registry,
+            )
 
     return {
         **state,

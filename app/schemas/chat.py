@@ -46,3 +46,4 @@ class ChatResponse(BaseModel):
     answer: str
     chat_id: int
     sources: list[SourceItem]
+    answer_metadata: dict = {}

@@ -42,7 +42,13 @@ def normalize_message(msg: dict) -> dict:
     return {
         "role": msg.get("role", ""),
         "content": msg.get("content", ""),
-        "sources": unique_sources(msg.get("sources", [])),
+        "sources": unique_sources(
+            msg.get("sources", [])
+        ),
+        "answer_metadata": msg.get(
+            "answer_metadata",
+            {},
+        ),
     }
 
 
@@ -74,6 +80,10 @@ def load_chat_messages(chat_id: int, headers: dict) -> list[dict]:
                     "role": role,
                     "content": content,
                     "sources": sources,
+                    "answer_metadata": metadata.get(
+                        "answer_metadata",
+                        {},
+                    ),
                 }
             )
         )
@@ -300,6 +310,75 @@ for msg_index, msg in enumerate(st.session_state.messages):
                                     key=f"src_{msg_index}_{source_index}",
                                     use_container_width=True,
                                 )
+
+        metadata = msg.get(
+            "answer_metadata",
+            {},
+        )
+
+        mitre = metadata.get(
+            "mitre",
+            [],
+        )
+
+        if mitre:
+
+            st.markdown("### 🛡 MITRE ATT&CK")
+
+            for technique in mitre:
+
+                with st.container(border=True):
+
+                    st.markdown(
+                        f"### {technique['technique_id']}"
+                    )
+
+                    st.markdown(
+                        f"**Technique:** "
+                        f"{technique['technique_name']}"
+                    )
+
+                    st.markdown(
+                        f"**Tactic:** "
+                        f"{technique['tactic']}"
+                    )
+
+                    confidence = technique["confidence"]
+
+                    if confidence >= 0.90:
+                        label = "🟢 High"
+
+                    elif confidence >= 0.75:
+                        label = "🟡 Medium"
+
+                    else:
+                        label = "🔴 Low"
+
+                    st.markdown(
+                        f"**Confidence:** {label}"
+                    )
+
+                    st.markdown(
+                        "**Supporting Evidence:** "
+                        + ", ".join(
+                            f"#{e}"
+                            for e in technique[
+                                "supporting_evidence_ids"
+                            ]
+                        )
+                    )
+
+                    keywords = technique.get(
+                        "matched_keywords",
+                        [],
+                    )
+
+                    if keywords:
+
+                        st.caption(
+                            "Matched keywords: "
+                            + ", ".join(keywords)
+                        )
 # ----------------------------------
 # Ask Question
 # ----------------------------------
@@ -307,32 +386,38 @@ for msg_index, msg in enumerate(st.session_state.messages):
 question = st.chat_input("Ask a cybersecurity question...")
 
 if question:
+
     st.session_state.messages.append(
         normalize_message(
             {
                 "role": "user",
                 "content": question,
-                "sources": []
+                "sources": [],
+                "answer_metadata": {},
             }
         )
     )
 
     try:
+
         with st.spinner("Researching..."):
+
             response = requests.post(
                 f"{BASE_URL}/chat",
                 json={
                     "question": question,
-                    "chat_id": st.session_state.chat_id
+                    "chat_id": st.session_state.chat_id,
                 },
                 headers=headers,
-                timeout=120
+                timeout=120,
             )
 
         if response.status_code == 200:
+
             data = response.json()
 
             if "chat_id" in data:
+
                 st.session_state.chat_id = data["chat_id"]
                 st.session_state.history_refresh = True
 
@@ -342,6 +427,10 @@ if question:
                         "role": "assistant",
                         "content": data.get("answer", ""),
                         "sources": data.get("sources", []),
+                        "answer_metadata": data.get(
+                            "answer_metadata",
+                            {},
+                        ),
                     }
                 )
             )
@@ -349,11 +438,14 @@ if question:
             st.rerun()
 
         else:
+
             st.error(f"API Error: {response.status_code}")
+
             try:
                 st.error(response.text)
             except Exception:
                 pass
 
     except Exception as ex:
+
         st.error(str(ex))

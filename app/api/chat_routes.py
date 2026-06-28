@@ -142,6 +142,10 @@ def chat(
             "resolved_question": resolved_question,
             "rewritten_query": result.get("rewritten_query"),
             "sources": metadata_sources,
+            "answer_metadata": result.get(
+                "answer_metadata",
+                {},
+            ),
         }
     )
 
@@ -159,5 +163,9 @@ def chat(
     return ChatResponse(
         answer=answer,
         chat_id=chat_id,
-        sources=source_items
+        sources=source_items,
+        answer_metadata=result.get(
+            "answer_metadata",
+            {},
+        ),
     )

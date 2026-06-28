@@ -14,7 +14,6 @@ MAX_SUMMARY_CHARS = 1200
 MAX_CONTENT_CHARS = 2500
 MAX_TOTAL_CONTEXT_CHARS = 3000
 
-# Phase 26
 MAX_FOCUSED_CONTEXT_CHARS = 1800
 MAX_FOCUSED_ARTICLES = 3
 
@@ -23,47 +22,6 @@ MAX_PARAGRAPHS_PER_ARTICLE = 4
 
 MAX_SENTENCES_PER_ARTICLE = 10
 MIN_SENTENCE_LENGTH = 40
-
-def _safe_str(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _clip_text(value: str, limit: int) -> str:
-    value = (value or "").strip()
-    if len(value) <= limit:
-        return value
-    return value[:limit].rstrip() + "..."
-
-
-def _normalize_article(article: Any) -> Dict[str, Any]:
-    # Supports both SQLAlchemy Article objects and dict-like items
-    if isinstance(article, dict):
-        return {
-            "id": article.get("id"),
-            "title": article.get("title") or "Untitled",
-            "source": article.get("source") or "Unknown",
-            "url": article.get("url") or "",
-            "published_at": article.get("published_at"),
-            "summary": article.get("summary") or "",
-            "content": article.get("content") or "",
-        }
-
-    return {
-        "id": getattr(article, "id", None),
-        "title": getattr(article, "title", None) or "Untitled",
-        "source": getattr(article, "source_name", None) or getattr(article, "source", None) or "Unknown",
-        "url": getattr(article, "url", None) or "",
-        "published_at": getattr(article, "published_at", None),
-        "summary": getattr(article, "summary", None) or "",
-        "content": getattr(article, "content", None) or "",
-    }
-
-
-# ============================================================
-# Phase 26 helpers
-# ============================================================
 
 STOPWORDS = {
     "what", "about", "was", "were", "is", "are", "did", "does", "do", "the",
@@ -99,6 +57,56 @@ RESPONSE_KEYWORDS = {
     "responded",
 }
 
+MITRE_ATTACK_MAP = [
+    {
+        "technique_id": "T1528",
+        "technique_name": "Steal Application Access Token",
+        "tactic": "Credential Access",
+        "keywords": [
+            "oauth token",
+            "oauth tokens",
+            "access token",
+            "token theft",
+            "stolen token",
+        ],
+    },
+    {
+        "technique_id": "T1078",
+        "technique_name": "Valid Accounts",
+        "tactic": "Defense Evasion",
+        "keywords": [
+            "valid account",
+            "credentials",
+            "credential",
+            "stolen credentials",
+            "compromised account",
+            "login",
+        ],
+    },
+    {
+        "technique_id": "T1566",
+        "technique_name": "Phishing",
+        "tactic": "Initial Access",
+        "keywords": [
+            "phishing",
+            "phishing email",
+            "social engineering",
+        ],
+    },
+    {
+        "technique_id": "T1195",
+        "technique_name": "Supply Chain Compromise",
+        "tactic": "Initial Access",
+        "keywords": [
+            "supply chain",
+            "third-party",
+            "vendor",
+            "dependency",
+            "integration",
+        ],
+    },
+]
+
 # ============================================================
 # Grounded Answer Context
 # ============================================================
@@ -132,6 +140,26 @@ class Citation:
     sentence: str
 
 @dataclass
+class MITRETechnique:
+    """
+    MITRE ATT&CK technique inferred from grounded evidence.
+    """
+
+    technique_id: str
+
+    technique_name: str
+
+    tactic: str
+
+    confidence: float
+
+    evidence_count: int = 0
+
+    matched_keywords: List[str] = field(default_factory=list)
+
+    supporting_evidence_ids: List[int] = field(default_factory=list)
+
+@dataclass
 class GroundedAnswerContext:
 
     question: str = ""
@@ -151,6 +179,48 @@ class GroundedAnswerContext:
     unknowns: List[str] = field(default_factory=list)
 
     all_evidence: List[Evidence] = field(default_factory=list)
+ 
+    mitre_techniques: List[MITRETechnique] = field(
+        default_factory=list
+    )
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+def _clip_text(value: str, limit: int) -> str:
+    value = (value or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "..."
+
+def _normalize_article(article: Any) -> Dict[str, Any]:
+    # Supports both SQLAlchemy Article objects and dict-like items
+    if isinstance(article, dict):
+        return {
+            "id": article.get("id"),
+            "title": article.get("title") or "Untitled",
+            "source": article.get("source") or "Unknown",
+            "url": article.get("url") or "",
+            "published_at": article.get("published_at"),
+            "summary": article.get("summary") or "",
+            "content": article.get("content") or "",
+        }
+
+    return {
+        "id": getattr(article, "id", None),
+        "title": getattr(article, "title", None) or "Untitled",
+        "source": getattr(article, "source_name", None) or getattr(article, "source", None) or "Unknown",
+        "url": getattr(article, "url", None) or "",
+        "published_at": getattr(article, "published_at", None),
+        "summary": getattr(article, "summary", None) or "",
+        "content": getattr(article, "content", None) or "",
+    }
 
 def _tokenize(text: str) -> List[str]:
     return re.findall(r"[a-zA-Z0-9][a-zA-Z0-9\-\._&]+", (text or "").lower())
@@ -285,7 +355,6 @@ def _select_focus_articles(
     # fallback
     return articles[:MAX_FOCUSED_ARTICLES]
 
-
 def _build_question_type_hint(question: str, resolved_question: str) -> str:
     q = f"{question} {resolved_question}".lower()
 
@@ -360,6 +429,111 @@ def _classify_evidence(
     # Default
     #
     return "fact"
+
+def _match_mitre_for_evidence(
+    evidence: Evidence,
+) -> List[MITRETechnique]:
+    """
+    Infer MITRE ATT&CK techniques from one evidence sentence.
+    """
+
+    text = evidence.sentence.lower()
+
+    techniques = []
+
+    for mapping in MITRE_ATTACK_MAP:
+
+        matched = [
+            keyword
+            for keyword in mapping["keywords"]
+            if keyword in text
+        ]
+
+        if not matched:
+            continue
+
+        confidence = min(
+            1.0,
+            0.60 + (0.10 * len(matched))
+        )
+
+        techniques.append(
+            MITRETechnique(
+                technique_id=mapping["technique_id"],
+                technique_name=mapping["technique_name"],
+                tactic=mapping["tactic"],
+                confidence=confidence,
+                evidence_count=1,
+                matched_keywords=matched,
+                supporting_evidence_ids=[
+                    evidence.evidence_id
+                ],
+            )
+        )
+
+    return techniques
+
+def _map_mitre_techniques(
+    evidence_list: List[Evidence],
+) -> List[MITRETechnique]:
+    """
+    Build a deduplicated MITRE ATT&CK list from all evidence.
+    """
+
+    merged = {}
+
+    for evidence in evidence_list:
+
+        for technique in _match_mitre_for_evidence(
+            evidence
+        ):
+
+            key = technique.technique_id
+
+            if key not in merged:
+
+                merged[key] = technique
+
+            else:
+
+                existing = merged[key]
+
+                existing.confidence = max(
+                    existing.confidence,
+                    technique.confidence,
+                )
+
+                existing.supporting_evidence_ids.extend(
+                    technique.supporting_evidence_ids
+                )
+                
+                existing.evidence_count += 1
+
+                existing.confidence = min(
+                    1.0,
+                    existing.confidence
+                    + (0.05 * existing.evidence_count)
+                )
+
+                existing.supporting_evidence_ids = sorted(
+                    set(existing.supporting_evidence_ids)
+                )
+
+                existing.matched_keywords = sorted(
+                    set(
+                        existing.matched_keywords
+                        + technique.matched_keywords
+                    )
+                )
+
+    return sorted(
+        merged.values(),
+        key=lambda t: (
+            t.confidence,
+            t.evidence_count,
+        ),
+        reverse=True,
+    )
 
 def _build_grounding_context(
     evidence_list: List[Evidence],
@@ -461,6 +635,10 @@ def _build_grounding_context(
             "Response actions are not explicitly stated in the retrieved sources."
         )
 
+    context.mitre_techniques = _map_mitre_techniques(
+        evidence_list,
+    )
+
     return context
 
 def _log_grounding_context(
@@ -489,6 +667,8 @@ def _log_grounding_context(
         print("Top Evidence IDs:",
             [e.evidence_id for e in context.all_evidence[:5]])
 
+    print("MITRE         :", len(context.mitre_techniques))
+
     print("Unknowns       :", len(context.unknowns))
 
     print("=" * 80)
@@ -512,14 +692,17 @@ def _grounding_context_to_text(
         sections.append(f"Incident: {context.incident}")
 
     #
-    # Confirmed facts
+    # Confirmed Facts
     #
 
     sections.append("\nCONFIRMED FACTS")
 
     if context.confirmed_facts:
 
-        for idx, evidence in enumerate(context.confirmed_facts, start=1):
+        for idx, evidence in enumerate(
+            context.confirmed_facts,
+            start=1,
+        ):
 
             sections.append(
                 f"""
@@ -578,7 +761,7 @@ Evidence:
         )
 
     #
-    # Response actions
+    # Response Actions
     #
 
     sections.append("\nRESPONSE ACTIONS")
@@ -598,7 +781,48 @@ Evidence:
         )
 
     #
-    # Unknowns
+    # MITRE ATT&CK
+    #
+
+    sections.append("\nMITRE ATT&CK")
+
+    if context.mitre_techniques:
+
+        for technique in context.mitre_techniques:
+
+            sections.append(
+                f"""
+Technique ID:
+{technique.technique_id}
+
+Technique:
+{technique.technique_name}
+
+Tactic:
+{technique.tactic}
+
+Confidence:
+{technique.confidence:.2f}
+
+Supporting Evidence Count:
+{technique.evidence_count}
+
+Matched Keywords:
+{", ".join(technique.matched_keywords) or "None"}
+
+Supporting Evidence:
+{", ".join(f"#{e}" for e in technique.supporting_evidence_ids)}
+""".strip()
+            )
+
+    else:
+
+        sections.append(
+            "No MITRE ATT&CK techniques mapped."
+        )
+
+    #
+    # Known Gaps
     #
 
     if context.unknowns:
@@ -612,9 +836,6 @@ Evidence:
             )
 
     return "\n".join(sections)
-
-
-
 # ============================================================
 # Graph nodes
 # ============================================================
@@ -1236,18 +1457,31 @@ def generate_answer_node(state: GraphState) -> GraphState:
         )
         return {
             **state,
-            "answer": fallback,
-            "answer_sections": {
-                "executive_summary": fallback,
-                "key_findings": "",
-                "impact": "",
-                "recommendations": "",
-            },
+            "answer": answer,
+            "answer_sections": {},
             "answer_metadata": {
                 "resolved_question": resolved_question,
                 "topic_context": topic_context,
                 "question_type": question_type,
-                "used_context": False,
+                "used_context": True,
+                "used_focused_context": bool(focused_context),
+
+                "mitre": [
+                    {
+                        "technique_id": t.technique_id,
+                        "technique_name": t.technique_name,
+                        "tactic": t.tactic,
+                        "confidence": round(t.confidence, 2),
+                        "evidence_count": t.evidence_count,
+                        "matched_keywords": t.matched_keywords,
+                        "supporting_evidence_ids": t.supporting_evidence_ids,
+                    }
+                    for t in (
+                        grounding_context.mitre_techniques
+                        if grounding_context
+                        else []
+                    )
+                ],
             },
             "sources": chosen_sources,
         }
@@ -1442,20 +1676,60 @@ If the grounded answer context contains recommendations:
 
 Provide 3–5 evidence-based recommendations.
 
-Every recommendation derived from the grounded answer context must end with its supporting evidence reference.
-
-Example:
-
-• LastPass revoked affected OAuth tokens. [Evidence #6]
+Every recommendation must end with an evidence reference.
 
 Otherwise write:
 
 General Cybersecurity Best Practices
+
 (Not derived from the retrieved sources)
 
-followed by 3-5 generic security recommendations.
+followed by 3–5 generic recommendations.
 
-Do NOT invent incident-specific remediation.
+----------------------------------------------------
+
+## MITRE ATT&CK
+
+If one or more MITRE ATT&CK techniques appear in the grounded answer context,
+
+include a section like:
+
+• T1528 – Steal Application Access Token
+
+  Tactic:
+  Credential Access
+
+  Confidence:
+  High
+
+• T1195 – Supply Chain Compromise
+  Tactic: Initial Access
+
+Only list techniques present in the grounded answer context.
+
+If no techniques exist,
+
+omit this section completely.
+
+====================================================
+MITRE ATT&CK USAGE
+====================================================
+
+The grounded answer context may contain inferred MITRE ATT&CK techniques.
+
+Only reference a MITRE ATT&CK technique when:
+
+• It appears in the grounded answer context.
+
+• It is supported by the listed evidence.
+
+Do NOT invent ATT&CK techniques.
+
+Do NOT infer additional ATT&CK mappings.
+
+If no ATT&CK techniques are supplied in the grounded answer context,
+
+do not mention MITRE ATT&CK.
 
 ====================================================
 FINAL VALIDATION
@@ -1469,11 +1743,23 @@ Before producing the final answer, verify:
 
 ✓ Every evidence reference corresponds to an Evidence ID present in the grounded answer context.
 
+✓ Every MITRE ATT&CK technique mentioned appears in the grounded answer context.
+
+✓ Do not invent ATT&CK techniques.
+
+✓ Do not infer ATT&CK mappings beyond the supplied evidence.
+
 ✓ No outside knowledge was used.
 
 ✓ No unsupported conclusions were made.
 
 ✓ The answer focuses only on the resolved question.
+
+✓ Every MITRE ATT&CK technique must be supported by at least one evidence item.
+
+✓ Never assign confidence beyond the grounded evidence.
+
+✓ Prefer higher-confidence techniques when summarizing.
 
 ✓ If uncertain, respond:
 
@@ -1515,6 +1801,23 @@ Before producing the final answer, verify:
             "question_type": question_type,
             "used_context": True,
             "used_focused_context": bool(focused_context),
+
+            "mitre": [
+                {
+                    "technique_id": t.technique_id,
+                    "technique_name": t.technique_name,
+                    "tactic": t.tactic,
+                    "confidence": round(t.confidence, 2),
+                    "evidence_count": t.evidence_count,
+                    "matched_keywords": t.matched_keywords,
+                    "supporting_evidence_ids": t.supporting_evidence_ids,
+                }
+                for t in (
+                    grounding_context.mitre_techniques
+                    if grounding_context
+                    else []
+                )
+            ],
         },
         "sources": chosen_sources,
     }

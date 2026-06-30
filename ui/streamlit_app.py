@@ -321,6 +321,12 @@ for msg_index, msg in enumerate(st.session_state.messages):
             [],
         )
 
+        d3fend = metadata.get(
+            "d3fend",
+            [],
+        )
+
+
         if mitre:
 
             st.markdown("### 🛡 MITRE ATT&CK")
@@ -330,20 +336,23 @@ for msg_index, msg in enumerate(st.session_state.messages):
                 with st.container(border=True):
 
                     st.markdown(
-                        f"### {technique['technique_id']}"
+                        f"### {technique.get('technique_id', '')}"
                     )
 
                     st.markdown(
                         f"**Technique:** "
-                        f"{technique['technique_name']}"
+                        f"{technique.get('technique_name', '')}"
                     )
 
                     st.markdown(
                         f"**Tactic:** "
-                        f"{technique['tactic']}"
+                        f"{technique.get('tactic', '')}"
                     )
 
-                    confidence = technique["confidence"]
+                    confidence = technique.get(
+                        "confidence",
+                        0.0,
+                    )
 
                     if confidence >= 0.90:
                         label = "🟢 High"
@@ -355,18 +364,29 @@ for msg_index, msg in enumerate(st.session_state.messages):
                         label = "🔴 Low"
 
                     st.markdown(
-                        f"**Confidence:** {label}"
+                        f"**Confidence:** "
+                        f"{label} ({confidence:.0%})"
                     )
 
-                    st.markdown(
-                        "**Supporting Evidence:** "
-                        + ", ".join(
-                            f"#{e}"
-                            for e in technique[
-                                "supporting_evidence_ids"
-                            ]
-                        )
+                    supporting_ids = technique.get(
+                        "supporting_evidence_ids",
+                        [],
                     )
+
+                    if supporting_ids:
+
+                        st.markdown(
+                            f"**Supporting Articles:** "
+                            f"{len(supporting_ids)}"
+                        )
+
+                        st.markdown(
+                            "**Supporting Evidence:** "
+                            + ", ".join(
+                                f"#{e}"
+                                for e in supporting_ids
+                            )
+                        )
 
                     keywords = technique.get(
                         "matched_keywords",
@@ -379,6 +399,91 @@ for msg_index, msg in enumerate(st.session_state.messages):
                             "Matched keywords: "
                             + ", ".join(keywords)
                         )
+       
+        if d3fend:
+
+            st.markdown("### 🛡 MITRE D3FEND")
+
+            for technique in d3fend:
+
+                with st.container(border=True):
+
+                    st.markdown(
+                        f"### {technique.get('technique_id', '')}"
+                    )
+
+                    st.markdown(
+                        f"**Technique:** "
+                        f"{technique.get('technique_name', '')}"
+                    )
+
+                    st.markdown(
+                        f"**Category:** "
+                        f"{technique.get('category', '')}"
+                    )
+
+                    confidence = technique.get(
+                        "confidence",
+                        0.0,
+                    )
+
+                    if confidence >= 0.90:
+                        label = "🟢 High"
+
+                    elif confidence >= 0.75:
+                        label = "🟡 Medium"
+
+                    else:
+                        label = "🔴 Low"
+
+                    st.markdown(
+                        f"**Confidence:** "
+                        f"{label} ({confidence:.0%})"
+                    )
+
+                    supporting_ids = technique.get(
+                        "supporting_evidence_ids",
+                        [],
+                    )
+
+                    if supporting_ids:
+
+                        st.markdown(
+                            f"**Supporting Articles:** "
+                            f"{len(supporting_ids)}"
+                        )
+
+                        st.markdown(
+                            "**Supporting Evidence:** "
+                            + ", ".join(
+                                f"#{e}"
+                                for e in supporting_ids
+                            )
+                        )
+                    
+                    mapped_attack = technique.get(
+                        "mapped_attack_techniques",
+                        [],
+                    )
+
+                    if mapped_attack:
+
+                        st.markdown("**Mapped ATT&CK Techniques:**")
+                        for attack in mapped_attack:
+                            st.markdown(f"- {attack}")
+
+                    response_actions = technique.get(
+                        "matched_response_actions",
+                        [],
+                    )
+
+                    if response_actions:
+
+                        st.markdown("**Response Actions:**")
+
+                        for action in response_actions:
+                            st.markdown(f"- {action}")
+            
 # ----------------------------------
 # Ask Question
 # ----------------------------------

@@ -107,6 +107,50 @@ MITRE_ATTACK_MAP = [
     },
 ]
 
+MITRE_D3FEND_MAP = {
+    "T1528": [
+        {
+            "technique_id": "D3-CRA",
+            "technique_name": "Credential Rotation",
+            "category": "Credential Hardening",
+        },
+        {
+            "technique_id": "D3-MFA",
+            "technique_name": "Multi-factor Authentication",
+            "category": "Identity Protection",
+        },
+    ],
+
+    "T1078": [
+        {
+            "technique_id": "D3-CRA",
+            "technique_name": "Credential Rotation",
+            "category": "Credential Hardening",
+        },
+        {
+            "technique_id": "D3-IAM",
+            "technique_name": "Identity and Access Management",
+            "category": "Access Control",
+        },
+    ],
+
+    "T1566": [
+        {
+            "technique_id": "D3-ETF",
+            "technique_name": "Email Traffic Filtering",
+            "category": "Email Security",
+        },
+    ],
+
+    "T1195": [
+        {
+            "technique_id": "D3-SCV",
+            "technique_name": "Software Component Verification",
+            "category": "Supply Chain Security",
+        },
+    ],
+}
+
 # ============================================================
 # Grounded Answer Context
 # ============================================================
@@ -160,6 +204,32 @@ class MITRETechnique:
     supporting_evidence_ids: List[int] = field(default_factory=list)
 
 @dataclass
+class D3FENDTechnique:
+    """
+    Defensive technique inferred from MITRE ATT&CK techniques.
+    """
+
+    technique_id: str
+
+    technique_name: str
+
+    category: str
+
+    confidence: float
+
+    mapped_attack_techniques: List[str] = field(
+        default_factory=list
+    )
+
+    supporting_evidence_ids: List[int] = field(
+        default_factory=list
+    )
+
+    matched_response_actions: List[str] = field(
+        default_factory=list
+    )
+
+@dataclass
 class GroundedAnswerContext:
 
     question: str = ""
@@ -179,8 +249,12 @@ class GroundedAnswerContext:
     unknowns: List[str] = field(default_factory=list)
 
     all_evidence: List[Evidence] = field(default_factory=list)
- 
+
     mitre_techniques: List[MITRETechnique] = field(
+        default_factory=list
+    )
+
+    d3fend_techniques: List[D3FENDTechnique] = field(
         default_factory=list
     )
 
@@ -535,6 +609,97 @@ def _map_mitre_techniques(
         reverse=True,
     )
 
+def _extract_response_actions(
+    evidence_list: List[Evidence],
+) -> List[str]:
+    """
+    Collect response-related keywords from evidence.
+    """
+
+    actions = []
+
+    for evidence in evidence_list:
+
+        text = evidence.sentence.lower()
+
+        for keyword in RESPONSE_KEYWORDS:
+
+            if keyword in text and keyword not in actions:
+                actions.append(keyword)
+
+    return sorted(actions)
+
+def _map_d3fend_techniques(
+    mitre_techniques: List[MITRETechnique],
+    evidence_list: List[Evidence],
+) -> List[D3FENDTechnique]:
+    """
+    Infer MITRE D3FEND techniques from ATT&CK techniques.
+    """
+    response_actions = _extract_response_actions(
+        evidence_list,
+    )
+    merged = {}
+
+    for attack in mitre_techniques:
+
+        mappings = MITRE_D3FEND_MAP.get(
+            attack.technique_id,
+            [],
+        )
+
+        for mapping in mappings:
+
+            key = mapping["technique_id"]
+
+            if key not in merged:
+
+                merged[key] = D3FENDTechnique(
+                    technique_id=mapping["technique_id"],
+                    technique_name=mapping["technique_name"],
+                    category=mapping["category"],
+                    confidence=attack.confidence,
+                    mapped_attack_techniques=[
+                        attack.technique_id
+                    ],
+                    supporting_evidence_ids=list(
+                        attack.supporting_evidence_ids
+                    ),
+                    matched_response_actions=response_actions,
+
+                )
+
+            else:
+
+                existing = merged[key]
+
+                existing.confidence = max(
+                    existing.confidence,
+                    attack.confidence,
+                )
+
+                existing.mapped_attack_techniques.extend(
+                    [attack.technique_id]
+                )
+
+                existing.mapped_attack_techniques = sorted(
+                    set(existing.mapped_attack_techniques)
+                )
+
+                existing.supporting_evidence_ids.extend(
+                    attack.supporting_evidence_ids
+                )
+
+                existing.supporting_evidence_ids = sorted(
+                    set(existing.supporting_evidence_ids)
+                )
+
+    return sorted(
+        merged.values(),
+        key=lambda item: item.confidence,
+        reverse=True,
+    )
+
 def _build_grounding_context(
     evidence_list: List[Evidence],
     question: str,
@@ -639,6 +804,11 @@ def _build_grounding_context(
         evidence_list,
     )
 
+    context.d3fend_techniques = _map_d3fend_techniques(
+        context.mitre_techniques,
+        evidence_list,
+    )
+
     return context
 
 def _log_grounding_context(
@@ -667,7 +837,9 @@ def _log_grounding_context(
         print("Top Evidence IDs:",
             [e.evidence_id for e in context.all_evidence[:5]])
 
-    print("MITRE         :", len(context.mitre_techniques))
+    print("MITRE          :", len(context.mitre_techniques))
+
+    print("D3FEND         :", len(context.d3fend_techniques))
 
     print("Unknowns       :", len(context.unknowns))
 
@@ -706,32 +878,32 @@ def _grounding_context_to_text(
 
             sections.append(
                 f"""
-Fact #{idx}
+                Fact #{idx}
 
-Relevance Score:
-{evidence.score}
+                Relevance Score:
+                {evidence.score}
 
-Matched Terms:
-{", ".join(evidence.matched_terms) or "None"}
+                Matched Terms:
+                {", ".join(evidence.matched_terms) or "None"}
 
-Matched Entities:
-{", ".join(evidence.matched_entities) or "None"}
+                Matched Entities:
+                {", ".join(evidence.matched_entities) or "None"}
 
-Evidence ID:
-{evidence.evidence_id}
+                Evidence ID:
+                {evidence.evidence_id}
 
-Source:
-{evidence.source}
+                Source:
+                {evidence.source}
 
-Title:
-{evidence.title}
+                Title:
+                {evidence.title}
 
-URL:
-{evidence.url}
+                URL:
+                {evidence.url}
 
-Evidence:
-{evidence.sentence}
-""".strip()
+                Evidence:
+                {evidence.sentence}
+                """.strip()
             )
 
     else:
@@ -792,33 +964,74 @@ Evidence:
 
             sections.append(
                 f"""
-Technique ID:
-{technique.technique_id}
+                Technique ID:
+                {technique.technique_id}
 
-Technique:
-{technique.technique_name}
+                Technique:
+                {technique.technique_name}
 
-Tactic:
-{technique.tactic}
+                Tactic:
+                {technique.tactic}
 
-Confidence:
-{technique.confidence:.2f}
+                Confidence:
+                {technique.confidence:.2f}
 
-Supporting Evidence Count:
-{technique.evidence_count}
+                Supporting Evidence Count:
+                {technique.evidence_count}
 
-Matched Keywords:
-{", ".join(technique.matched_keywords) or "None"}
+                Matched Keywords:
+                {", ".join(technique.matched_keywords) or "None"}
 
-Supporting Evidence:
-{", ".join(f"#{e}" for e in technique.supporting_evidence_ids)}
-""".strip()
+                Supporting Evidence:
+                {", ".join(f"#{e}" for e in technique.supporting_evidence_ids)}
+                """.strip()
             )
 
     else:
 
         sections.append(
             "No MITRE ATT&CK techniques mapped."
+        )
+
+    #
+    # MITRE D3FEND
+    #
+
+    sections.append("\nMITRE D3FEND")
+
+    if context.d3fend_techniques:
+
+        for technique in context.d3fend_techniques:
+
+            sections.append(
+                f"""
+                Technique ID:
+                {technique.technique_id}
+
+                Technique:
+                {technique.technique_name}
+
+                Category:
+                {technique.category}
+
+                Confidence:
+                {technique.confidence:.2f}
+
+                Mapped ATT&CK Techniques:
+                {", ".join(technique.mapped_attack_techniques) or "None"}
+
+                Supporting Evidence:
+                {", ".join(f"#{e}" for e in technique.supporting_evidence_ids) or "None"}
+
+                Response Actions:
+                {", ".join(technique.matched_response_actions) or "None"}
+                """.strip()
+            )
+
+    else:
+
+        sections.append(
+            "No MITRE D3FEND techniques mapped."
         )
 
     #
@@ -836,6 +1049,7 @@ Supporting Evidence:
             )
 
     return "\n".join(sections)
+
 # ============================================================
 # Graph nodes
 # ============================================================
@@ -1457,7 +1671,7 @@ def generate_answer_node(state: GraphState) -> GraphState:
         )
         return {
             **state,
-            "answer": answer,
+            "answer": fallback,
             "answer_sections": {},
             "answer_metadata": {
                 "resolved_question": resolved_question,
@@ -1478,6 +1692,24 @@ def generate_answer_node(state: GraphState) -> GraphState:
                     }
                     for t in (
                         grounding_context.mitre_techniques
+                        if grounding_context
+                        else []
+                    )
+                ],
+
+                "d3fend": [
+                    {
+                        "technique_id": d.technique_id,
+                        "technique_name": d.technique_name,
+                        "category": d.category,
+                        "confidence": round(d.confidence, 2),
+                        "mapped_attack_techniques": d.mapped_attack_techniques,
+                        "supporting_evidence_ids": d.supporting_evidence_ids,
+                        "matched_response_actions": d.matched_response_actions,
+                        
+                    }
+                    for d in (
+                        grounding_context.d3fend_techniques
                         if grounding_context
                         else []
                     )
@@ -1732,6 +1964,24 @@ If no ATT&CK techniques are supplied in the grounded answer context,
 do not mention MITRE ATT&CK.
 
 ====================================================
+MITRE D3FEND USAGE
+====================================================
+
+The grounded answer context may contain inferred MITRE D3FEND techniques.
+
+Only reference MITRE D3FEND techniques that appear in the grounded answer context.
+
+Do NOT invent defensive techniques.
+
+Do NOT recommend D3FEND techniques that are not present in the grounded answer context.
+
+Use D3FEND techniques only when providing defensive recommendations.
+
+Do not replace MITRE ATT&CK with D3FEND.
+
+Use both only when appropriate.
+
+====================================================
 FINAL VALIDATION
 ====================================================
 
@@ -1818,6 +2068,24 @@ Before producing the final answer, verify:
                     else []
                 )
             ],
+
+            "d3fend": [
+                {
+                    "technique_id": d.technique_id,
+                    "technique_name": d.technique_name,
+                    "category": d.category,
+                    "confidence": round(d.confidence, 2),
+                    "mapped_attack_techniques": d.mapped_attack_techniques,
+                    "supporting_evidence_ids": d.supporting_evidence_ids,
+                    "matched_response_actions": d.matched_response_actions,
+                }
+                for d in (
+                    grounding_context.d3fend_techniques
+                    if grounding_context
+                    else []
+                )
+            ],
         },
         "sources": chosen_sources,
     }
+

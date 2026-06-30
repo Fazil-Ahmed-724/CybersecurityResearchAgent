@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
-
+from dataclasses import dataclass, field
 from app.graph.state import GraphState
 from app.services.retriever import Retriever
 from app.services.llm_service import LLMService
 from app.services.answer_cleanup import clean_generated_answer
-from dataclasses import dataclass, field
+from app.vulnerability.parser import CVEParser
+from app.vulnerability.nvd_service import NVDService
+from app.vulnerability.kev_service import KEVService
+from app.vulnerability.report_service import VulnerabilityReportService
 
 
 MAX_SUMMARY_CHARS = 1200
@@ -1635,6 +1638,42 @@ def generate_answer_node(state: GraphState) -> GraphState:
     print("\n[Node] Generating Answer")
 
     question = _safe_str(state.get("question"))
+
+    # ==========================================================
+    # Vulnerability Intelligence Path
+    # ==========================================================
+
+    if state.get("question_type") == "cve_lookup":
+
+        print("[Node] Generating Vulnerability Report")
+
+        vulnerability = state.get("vulnerability_context")
+
+        if vulnerability is None:
+
+            return {
+                **state,
+                "answer": "Unable to retrieve vulnerability information.",
+                "answer_sections": {},
+                "answer_metadata": {
+                    "question_type": "cve_lookup",
+                },
+            }
+
+        report_service = VulnerabilityReportService()
+
+        answer = report_service.generate(vulnerability)
+
+        return {
+            **state,
+            "answer": answer,
+            "answer_sections": {},
+            "answer_metadata": {
+                "question_type": "cve_lookup",
+                "cve_id": vulnerability.cve_id,
+            },
+        }
+
     resolved_question = _safe_str(state.get("resolved_question")) or question
 
     context = _safe_str(state.get("context"))
@@ -2087,5 +2126,93 @@ Before producing the final answer, verify:
             ],
         },
         "sources": chosen_sources,
+    }
+
+def detect_question_type_node(state: GraphState) -> GraphState:
+    """
+    Detect whether the user is asking about one or more CVEs.
+    """
+
+    question = state.get("question", "")
+
+    result = CVEParser.parse(question)
+
+    print("\n[Node] Question Classification")
+    print(f"Question Type : {result.question_type.value}")
+    print(f"CVEs          : {result.cve_ids}")
+
+    return {
+        **state,
+        "question_type": result.question_type.value,
+        "cve_ids": result.cve_ids,
+    }
+
+def lookup_vulnerability_node(state: GraphState) -> GraphState:
+    """
+    Looks up vulnerability information from NVD and enriches it
+    with CISA KEV information (if available).
+
+    This node only executes when question_type == "cve_lookup".
+    """
+
+    question_type = state.get("question_type")
+
+    if question_type != "cve_lookup":
+        return state
+
+    cve_ids = state.get("cve_ids", [])
+
+    if not cve_ids:
+        return state
+
+    #
+    # Phase 25 supports one CVE at a time.
+    # Multi-CVE reports will come later.
+    #
+    cve_id = cve_ids[0]
+
+    print("\n[Node] Vulnerability Lookup")
+    print(f"CVE : {cve_id}")
+
+    nvd_service = NVDService()
+
+    result = nvd_service.lookup(cve_id)
+
+    if not result.success:
+
+        print(f"[Node] NVD Error : {result.error}")
+
+        return {
+            **state,
+            "vulnerability_context": None,
+        }
+
+    vulnerability = result.vulnerability
+
+    #
+    # Enrich with KEV data
+    #
+    kev_service = KEVService()
+
+    kev = kev_service.lookup(cve_id)
+
+    if kev:
+
+        vulnerability.kev_status = kev
+
+        if kev.known_exploited:
+            print("[Node] KEV : Known Exploited")
+        else:
+            print("[Node] KEV : Not Listed")
+
+    print("[Node] NVD Lookup Successful")
+
+    print(f"Severity : {vulnerability.cvss.severity if vulnerability.cvss else 'Unknown'}")
+
+    print(f"Score    : {vulnerability.cvss.base_score if vulnerability.cvss else 'Unknown'}")
+
+    return {
+        **state,
+        "vulnerability_context": vulnerability,
     }
 
